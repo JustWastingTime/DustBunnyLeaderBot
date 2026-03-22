@@ -15,6 +15,7 @@ const path = require('path');
 
 const API_URL = 'https://uma.moe/api/v4/circles?circle_id=883948934';
 const CONFIG_PATH = path.join(__dirname, 'leaderboard-config.json');
+const LINKS_PATH = path.join(__dirname, 'user-links.json');
 
 const config = {
   token: process.env.DISCORD_BOT_TOKEN,
@@ -22,6 +23,7 @@ const config = {
 };
 
 let leaderboardMessage = null; // { channelId, messageId }
+let userLinks = {}; // { [discordUserId]: umaId }
 
 function loadConfig() {
   try {
@@ -35,6 +37,23 @@ function loadConfig() {
 function saveConfig() {
   if (!leaderboardMessage) return;
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(leaderboardMessage, null, 2));
+}
+
+function loadLinks() {
+  try {
+    const data = fs.readFileSync(LINKS_PATH, 'utf8');
+    userLinks = JSON.parse(data);
+  } catch {
+    userLinks = {};
+  }
+}
+
+function saveLinks() {
+  try {
+    fs.writeFileSync(LINKS_PATH, JSON.stringify(userLinks, null, 2));
+  } catch (err) {
+    console.error('Failed to save user links:', err.message);
+  }
 }
 
 async function fetchCircleData() {
@@ -327,6 +346,17 @@ async function registerCommands(clientId, token) {
       .setContexts(...guildAndDm)
       .setIntegrationTypes(ApplicationIntegrationType.UserInstall, ApplicationIntegrationType.GuildInstall),
     new SlashCommandBuilder()
+      .setName('link')
+      .setDescription('Link your Uma ID to your Discord account')
+      .addStringOption((option) =>
+        option
+          .setName('uma_id')
+          .setDescription('Your Uma trainer name / ID')
+          .setRequired(true),
+      )
+      .setContexts(...guildAndDm)
+      .setIntegrationTypes(ApplicationIntegrationType.UserInstall, ApplicationIntegrationType.GuildInstall),
+    new SlashCommandBuilder()
       .setName('banana')
       .setDescription('Show everyone ranked below Banana (monthly fans)')
       .setContexts(...guildOnly)
@@ -354,6 +384,7 @@ async function main() {
   }
 
   loadConfig();
+  loadLinks();
 
   const client = new Client({
     intents: [GatewayIntentBits.Guilds],
@@ -414,6 +445,18 @@ async function main() {
       } catch (err) {
         await interaction.editReply({ content: `❌ Failed: ${err.message}` });
       }
+    } else if (interaction.commandName === 'link') {
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        const umaId = interaction.options.getString('uma_id', true);
+        userLinks[interaction.user.id] = umaId;
+        saveLinks();
+        await interaction.editReply({
+          content: `✅ Linked your Discord account to Uma ID \`${escapeMarkdown(umaId)}\`. You can now use \`/trainer\` without specifying a name.`,
+        });
+      } catch (err) {
+        await interaction.editReply({ content: `❌ Failed to link: ${err.message}` });
+      }
     } else if (interaction.commandName === 'banana') {
       await interaction.deferReply();
       try {
@@ -433,13 +476,16 @@ async function main() {
         const nameArg = interaction.options.getString('name');
         let targetName = nameArg;
 
-        // TODO: If no name is provided, map Discord user -> trainer later.
         if (!targetName) {
-          await interaction.editReply({
-            content:
-              'Please provide a trainer name for now, e.g. `/trainer Izuuuu` (automatic mapping will be added later).',
-          });
-          return;
+          const linked = userLinks[interaction.user.id];
+          if (!linked) {
+            await interaction.editReply({
+              content:
+                'You have not linked your Uma ID yet. Use `/link` to connect your Uma ID, or provide a trainer name, e.g. `/trainer Izuuuu`.',
+            });
+            return;
+          }
+          targetName = linked;
         }
 
         const lowerTarget = targetName.toLowerCase();
