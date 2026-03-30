@@ -347,11 +347,11 @@ async function registerCommands(clientId, token) {
       .setIntegrationTypes(ApplicationIntegrationType.UserInstall, ApplicationIntegrationType.GuildInstall),
     new SlashCommandBuilder()
       .setName('link')
-      .setDescription('Link your Uma ID to your Discord account')
+      .setDescription('Link your Uma Trainer to your Discord account')
       .addStringOption((option) =>
         option
           .setName('uma_id')
-          .setDescription('Your Uma trainer name / ID')
+          .setDescription('Your Uma trainer name')
           .setRequired(true),
       )
       .setContexts(...guildAndDm)
@@ -452,7 +452,7 @@ async function main() {
         userLinks[interaction.user.id] = umaId;
         saveLinks();
         await interaction.editReply({
-          content: `✅ Linked your Discord account to Uma ID \`${escapeMarkdown(umaId)}\`. You can now use \`/trainer\` without specifying a name.`,
+          content: `✅ Linked your Discord account by Uma Trainer name \`${escapeMarkdown(umaId)}\`. You can now use \`/trainer\` without specifying a name.`,
         });
       } catch (err) {
         await interaction.editReply({ content: `❌ Failed to link: ${err.message}` });
