@@ -21,10 +21,11 @@ A Discord bot that fetches circle data from [uma.moe](https://uma.moe/api/v4/cir
 npm install
 ```
 
-Copy `.env.example` to `.env` and set your bot token:
+Copy `.env.example` to `.env` and set your bot token (and uma.moe key if needed):
 
 ```
 DISCORD_BOT_TOKEN=your_bot_token_here
+UMA_API_KEY=uma_k_your_key_here
 UPDATE_INTERVAL_MINUTES=15
 ```
 

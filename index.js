@@ -19,6 +19,7 @@ const LINKS_PATH = path.join(__dirname, 'user-links.json');
 
 const config = {
   token: process.env.DISCORD_BOT_TOKEN,
+  umaApiKey: process.env.UMA_API_KEY,
   updateIntervalMinutes: parseInt(process.env.UPDATE_INTERVAL_MINUTES || '15', 10),
 };
 
@@ -57,7 +58,12 @@ function saveLinks() {
 }
 
 async function fetchCircleData() {
-  const res = await fetch(API_URL);
+  const headers = {};
+  if (config.umaApiKey) {
+    headers['X-API-Key'] = config.umaApiKey;
+  }
+
+  const res = await fetch(API_URL, { headers });
   if (!res.ok) throw new Error(`API returned ${res.status}`);
   return res.json();
 }
