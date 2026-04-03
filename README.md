@@ -15,6 +15,7 @@ A Discord bot that fetches circle data from [uma.moe](https://uma.moe/api/v4/cir
 7. Select Bot permissions: `Send Messages`, `Embed Links`
 8. Copy the generated URL, open it in a browser, and invite the bot to your server
 
+
 ### 2. Install and Configure
 
 ```bash
@@ -29,6 +30,10 @@ UMA_API_KEY=uma_k_your_key_here
 UPDATE_INTERVAL_MINUTES=15
 ```
 
+Uma.moe is now requiring an API key. Create an account there and generate an API Key to add to the env file.
+
+Change the url in `index.js` to your club's url in uma.moe
+
 ### 3. Run the Bot
 
 ```bash
@@ -41,10 +46,14 @@ npm start
 |---------|-------------|
 | `/setup-leaderboard` | Posts the leaderboard embed in the current channel and enables auto-updates |
 | `/refresh-leaderboard` | Manually refresh the leaderboard right away |
+| `/leaderboard` | Posts the current leaderboard embed used for conversations |
+| `/trainer` | Posts the monthly data of a user with fancy graph. Uses trainer name as a parameter |
+| `/link` | Users can link their discord to the leaderboard via trainer name |
+| `/banana` | Personal club shenanigan. Feel free to remove. |
 
 ## How It Works
 
 - The bot fetches data from `https://uma.moe/api/v4/circles?circle_id=883948934`
-- When you run `/setup-leaderboard`, it posts an embed and stores the message ID
+- When you run `/setup-leaderboard`, it posts an embed and stores the message ID. Only do this if you have a dedicated channel for a leaderboard.
 - Every 15 minutes (configurable via `UPDATE_INTERVAL_MINUTES`), it edits that message with fresh data
-- The embed shows circle info (leader, club rank, monthly points) and the top 10 members ranked by current fans
+- Use `/leaderboard` for a non autoupdating leaderboard.
