@@ -47,7 +47,7 @@ npm start
 | `/setup-leaderboard` | Posts the leaderboard embed in the current channel and enables auto-updates |
 | `/refresh-leaderboard` | Manually refresh the leaderboard right away |
 | `/leaderboard` | Posts your linked club's current leaderboard |
-| `/trainer` | Posts monthly data for a trainer in your linked club (optional name parameter) |
+| `/trainer` | Posts monthly data for a trainer via cross-club lookup; if multiple matches exist, you choose from a dropdown |
 | `/link` | Links your Discord account by trainer name and club (`Dust Bunny` or `Dirt Bunny`) |
 | `/banana` | Personal club shenanigan. Feel free to remove. |
 

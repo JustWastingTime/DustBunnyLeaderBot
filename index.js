@@ -9,6 +9,9 @@ const {
   PermissionFlagsBits,
   InteractionContextType,
   ApplicationIntegrationType,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ComponentType,
 } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
@@ -210,6 +213,53 @@ function buildTrainerEmbed(circle, member, ranks) {
   return embed;
 }
 
+function buildTrainerRanks(circle, members, targetViewerId) {
+  const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
+  const enriched = (members || [])
+    .map((m) => {
+      const f = m.daily_fans || [];
+      const nz = f.filter((n) => n > 0);
+      const first = nz[0] ?? 0;
+      const latest = nz[nz.length - 1] ?? first;
+      const gain = latest - first;
+      const d = nz.length || 1;
+      const lastUp = m.last_updated ? new Date(m.last_updated) : null;
+      const active = !circleYesterdayUpdated || (lastUp && lastUp >= circleYesterdayUpdated);
+      return { ...m, totalFans: latest, monthlyGain: gain, dailyAvg: Math.round(gain / d), isActive: active };
+    })
+    .filter((m) => m.isActive);
+
+  const byTotalFans = [...enriched].sort((a, b) => b.totalFans - a.totalFans);
+  const byMonthly = [...enriched].sort((a, b) => b.monthlyGain - a.monthlyGain);
+  const byDailyAvg = [...enriched].sort((a, b) => b.dailyAvg - a.dailyAvg);
+
+  const idx = (arr) => {
+    const i = arr.findIndex((m) => m.viewer_id === targetViewerId);
+    return i >= 0 ? i + 1 : null;
+  };
+
+  return { totalFans: idx(byTotalFans), monthly: idx(byMonthly), dailyAvg: idx(byDailyAvg) };
+}
+
+function findTrainerCandidates(targetName, datasets) {
+  const lowerTarget = targetName.toLowerCase();
+
+  const exact = [];
+  const partial = [];
+  for (const dataset of datasets) {
+    for (const member of dataset.members) {
+      const lowerName = (member.trainer_name || '').toLowerCase();
+      if (lowerName === lowerTarget) {
+        exact.push({ ...dataset, member });
+      } else if (lowerName.includes(lowerTarget)) {
+        partial.push({ ...dataset, member });
+      }
+    }
+  }
+
+  return exact.length ? exact : partial;
+}
+
 function buildLeaderboardEmbed(data) {
   const circle = data.circle;
   const members = data.members || [];
@@ -388,6 +438,16 @@ async function registerCommands(clientId, token) {
     new SlashCommandBuilder()
       .setName('leaderboard')
       .setDescription('Show the latest Dust Bunny circle leaderboard (no auto-update)')
+      .addStringOption((option) =>
+        option
+          .setName('club')
+          .setDescription('Optional: view a specific club leaderboard')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Dust Bunny', value: PRIMARY_CIRCLE_ID },
+            { name: 'Dirt Bunny', value: SECONDARY_CIRCLE_ID },
+          ),
+      )
       .setContexts(...guildAndDm)
       .setIntegrationTypes(ApplicationIntegrationType.UserInstall, ApplicationIntegrationType.GuildInstall),
     new SlashCommandBuilder()
@@ -494,7 +554,11 @@ async function main() {
     } else if (interaction.commandName === 'leaderboard') {
       await interaction.deferReply();
       try {
-        const circleId = getLinkedCircleId(interaction.user.id);
+        const selectedClub = interaction.options.getString('club');
+        const circleId =
+          selectedClub === PRIMARY_CIRCLE_ID || selectedClub === SECONDARY_CIRCLE_ID
+            ? selectedClub
+            : getLinkedCircleId(interaction.user.id);
         const data = await fetchCircleData(circleId);
         const embed = buildLeaderboardEmbed(data);
         await interaction.editReply({ embeds: [embed] });
@@ -527,11 +591,6 @@ async function main() {
     } else if (interaction.commandName === 'trainer') {
       await interaction.deferReply();
       try {
-        const linkedCircleId = getLinkedCircleId(interaction.user.id);
-        const data = await fetchCircleData(linkedCircleId);
-        const circle = data.circle;
-        const members = data.members || [];
-
         const nameArg = interaction.options.getString('name');
         let targetName = nameArg;
 
@@ -547,48 +606,97 @@ async function main() {
           targetName = linked.umaId;
         }
 
-        const lowerTarget = targetName.toLowerCase();
-        const member =
-          members.find((m) => (m.trainer_name || '').toLowerCase() === lowerTarget) ||
-          members.find((m) => (m.trainer_name || '').toLowerCase().includes(lowerTarget));
+        const [dustData, dirtData] = await Promise.all([
+          fetchCircleData(PRIMARY_CIRCLE_ID),
+          fetchCircleData(SECONDARY_CIRCLE_ID),
+        ]);
 
-        if (!member) {
+        const datasets = [
+          {
+            circleId: PRIMARY_CIRCLE_ID,
+            clubName: 'Dust Bunny',
+            circle: dustData.circle,
+            members: dustData.members || [],
+          },
+          {
+            circleId: SECONDARY_CIRCLE_ID,
+            clubName: 'Dirt Bunny',
+            circle: dirtData.circle,
+            members: dirtData.members || [],
+          },
+        ];
+
+        const candidates = findTrainerCandidates(targetName, datasets);
+        if (!candidates.length) {
           await interaction.editReply({
-            content: `❌ Could not find trainer \`${targetName}\` in ${circle.name}.`,
+            content: `❌ Could not find trainer \`${targetName}\` in Dust Bunny or Dirt Bunny.`,
           });
           return;
         }
 
-        const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
-        const enriched = (data.members || [])
-          .map((m) => {
-            const f = m.daily_fans || [];
-            const nz = f.filter((n) => n > 0);
-            const first = nz[0] ?? 0;
-            const latest = nz[nz.length - 1] ?? first;
-            const gain = latest - first;
-            const d = nz.length || 1;
-            const lastUp = m.last_updated ? new Date(m.last_updated) : null;
-            const active = !circleYesterdayUpdated || (lastUp && lastUp >= circleYesterdayUpdated);
-            return { ...m, totalFans: latest, monthlyGain: gain, dailyAvg: Math.round(gain / d), isActive: active };
-          })
-          .filter((m) => m.isActive);
+        if (candidates.length === 1) {
+          const selected = candidates[0];
+          const ranks = buildTrainerRanks(
+            selected.circle,
+            selected.members,
+            selected.member.viewer_id,
+          );
+          const embed = buildTrainerEmbed(selected.circle, selected.member, ranks);
+          await interaction.editReply({ embeds: [embed] });
+          return;
+        }
 
-        const byTotalFans = [...enriched].sort((a, b) => b.totalFans - a.totalFans);
-        const byMonthly = [...enriched].sort((a, b) => b.monthlyGain - a.monthlyGain);
-        const byDailyAvg = [...enriched].sort((a, b) => b.dailyAvg - a.dailyAvg);
+        const limited = candidates.slice(0, 25);
+        const select = new StringSelectMenuBuilder()
+          .setCustomId(`trainer-pick:${interaction.id}`)
+          .setPlaceholder('Multiple trainers found, choose one')
+          .addOptions(
+            limited.map((c, idx) => ({
+              label: (c.member.trainer_name || 'Unknown').slice(0, 100),
+              value: String(idx),
+              description: `${c.clubName} • viewer ${c.member.viewer_id}`.slice(0, 100),
+            })),
+          );
+        const row = new ActionRowBuilder().addComponents(select);
 
-        const idx = (arr) => {
-          const i = arr.findIndex((m) => m.viewer_id === member.viewer_id);
-          return i >= 0 ? i + 1 : null;
-        };
+        await interaction.editReply({
+          content: `Found multiple matches for \`${targetName}\`. Choose one:`,
+          components: [row],
+          embeds: [],
+        });
 
-        const ranks = { totalFans: idx(byTotalFans), monthly: idx(byMonthly), dailyAvg: idx(byDailyAvg) };
+        const reply = await interaction.fetchReply();
+        const picked = await reply.awaitMessageComponent({
+          componentType: ComponentType.StringSelect,
+          time: 60000,
+          filter: (i) =>
+            i.user.id === interaction.user.id && i.customId === `trainer-pick:${interaction.id}`,
+        });
 
-        const embed = buildTrainerEmbed(circle, member, ranks);
-        await interaction.editReply({ embeds: [embed] });
+        const pickedIdx = parseInt(picked.values[0], 10);
+        const selected = limited[pickedIdx];
+        if (!selected) {
+          await picked.update({ content: '❌ Invalid selection.', components: [] });
+          return;
+        }
+
+        const ranks = buildTrainerRanks(
+          selected.circle,
+          selected.members,
+          selected.member.viewer_id,
+        );
+        const embed = buildTrainerEmbed(selected.circle, selected.member, ranks);
+        await picked.update({ content: '', components: [], embeds: [embed] });
       } catch (err) {
-        await interaction.editReply({ content: `❌ Failed: ${err.message}` });
+        if (/time/i.test(err?.message || '')) {
+          await interaction.editReply({
+            content: '⏱️ Selection timed out. Run `/trainer` again.',
+            components: [],
+            embeds: [],
+          });
+          return;
+        }
+        await interaction.editReply({ content: `❌ Failed: ${err.message}`, components: [] });
       }
     }
   });
