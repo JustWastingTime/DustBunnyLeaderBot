@@ -310,7 +310,8 @@ function buildLeaderboardEmbed(data) {
 
   // Build description with stats + one codeblock table
   const lines = [];
-  lines.push(`**Current Rank:** # ${circle.live_rank}`);
+  const currentRank = circle.live_rank ?? circle.monthly_rank ?? '—';
+  lines.push(`**Current Rank:** # ${currentRank}`);
   lines.push(`**Last Month's Rank:** # ${circle.last_month_rank}`);
 
   if (!activeMembers.length) {
