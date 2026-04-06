@@ -32,7 +32,7 @@ UPDATE_INTERVAL_MINUTES=15
 
 Uma.moe is now requiring an API key. Create an account there and generate an API Key to add to the env file.
 
-Change the url in `index.js` to your club's url in uma.moe
+The bot supports both Dust Bunny and Dirt Bunny URLs by default. Users pick their club with `/link`.
 
 ### 3. Run the Bot
 
@@ -46,14 +46,16 @@ npm start
 |---------|-------------|
 | `/setup-leaderboard` | Posts the leaderboard embed in the current channel and enables auto-updates |
 | `/refresh-leaderboard` | Manually refresh the leaderboard right away |
-| `/leaderboard` | Posts the current leaderboard embed used for conversations |
-| `/trainer` | Posts the monthly data of a user with fancy graph. Uses trainer name as a parameter |
-| `/link` | Users can link their discord to the leaderboard via trainer name |
+| `/leaderboard` | Posts your linked club's current leaderboard |
+| `/trainer` | Posts monthly data for a trainer in your linked club (optional name parameter) |
+| `/link` | Links your Discord account by trainer name and club (`Dust Bunny` or `Dirt Bunny`) |
 | `/banana` | Personal club shenanigan. Feel free to remove. |
 
 ## How It Works
 
-- The bot fetches data from `https://uma.moe/api/v4/circles?circle_id=883948934`
+- The bot fetches data from:
+  - Dust Bunny: `https://uma.moe/api/v4/circles?circle_id=883948934`
+  - Dirt Bunny: `https://uma.moe/api/v4/circles?circle_id=419653159`
 - When you run `/setup-leaderboard`, it posts an embed and stores the message ID. Only do this if you have a dedicated channel for a leaderboard.
-- Every 15 minutes (configurable via `UPDATE_INTERVAL_MINUTES`), it edits that message with fresh data
-- Use `/leaderboard` for a non autoupdating leaderboard.
+- Every 15 minutes (configurable via `UPDATE_INTERVAL_MINUTES`), it edits that message with fresh data (Dust Bunny only).
+- Use `/leaderboard` for a non autoupdating leaderboard in the club selected via `/link`.

@@ -13,7 +13,12 @@ const {
 const fs = require('fs');
 const path = require('path');
 
-const API_URL = 'https://uma.moe/api/v4/circles?circle_id=883948934';
+const PRIMARY_CIRCLE_ID = '883948934';
+const SECONDARY_CIRCLE_ID = '419653159';
+const CIRCLE_APIS = {
+  [PRIMARY_CIRCLE_ID]: `https://uma.moe/api/v4/circles?circle_id=${PRIMARY_CIRCLE_ID}`,
+  [SECONDARY_CIRCLE_ID]: `https://uma.moe/api/v4/circles?circle_id=${SECONDARY_CIRCLE_ID}`,
+};
 const CONFIG_PATH = path.join(__dirname, 'leaderboard-config.json');
 const LINKS_PATH = path.join(__dirname, 'user-links.json');
 
@@ -24,7 +29,7 @@ const config = {
 };
 
 let leaderboardMessage = null; // { channelId, messageId }
-let userLinks = {}; // { [discordUserId]: umaId }
+let userLinks = {}; // { [discordUserId]: { umaId, circleId } }
 
 function loadConfig() {
   try {
@@ -43,7 +48,31 @@ function saveConfig() {
 function loadLinks() {
   try {
     const data = fs.readFileSync(LINKS_PATH, 'utf8');
-    userLinks = JSON.parse(data);
+    const parsed = JSON.parse(data);
+    // Backward compatibility: older format stored only trainer name string.
+    userLinks = Object.fromEntries(
+      Object.entries(parsed).map(([discordUserId, value]) => {
+        if (typeof value === 'string') {
+          return [
+            discordUserId,
+            {
+              umaId: value,
+              circleId: PRIMARY_CIRCLE_ID,
+            },
+          ];
+        }
+        return [
+          discordUserId,
+          {
+            umaId: value?.umaId || '',
+            circleId:
+              value?.circleId === SECONDARY_CIRCLE_ID
+                ? SECONDARY_CIRCLE_ID
+                : PRIMARY_CIRCLE_ID,
+          },
+        ];
+      }),
+    );
   } catch {
     userLinks = {};
   }
@@ -57,13 +86,23 @@ function saveLinks() {
   }
 }
 
-async function fetchCircleData() {
+function getCircleApiUrl(circleId) {
+  return CIRCLE_APIS[circleId] || CIRCLE_APIS[PRIMARY_CIRCLE_ID];
+}
+
+function getLinkedCircleId(discordUserId) {
+  const linked = userLinks[discordUserId];
+  if (!linked) return PRIMARY_CIRCLE_ID;
+  return linked.circleId === SECONDARY_CIRCLE_ID ? SECONDARY_CIRCLE_ID : PRIMARY_CIRCLE_ID;
+}
+
+async function fetchCircleData(circleId = PRIMARY_CIRCLE_ID) {
   const headers = {};
   if (config.umaApiKey) {
     headers['X-API-Key'] = config.umaApiKey;
   }
 
-  const res = await fetch(API_URL, { headers });
+  const res = await fetch(getCircleApiUrl(circleId), { headers });
   if (!res.ok) throw new Error(`API returned ${res.status}`);
   return res.json();
 }
@@ -323,7 +362,7 @@ async function updateLeaderboard(client) {
   try {
     const channel = await client.channels.fetch(leaderboardMessage.channelId);
     const message = await channel.messages.fetch(leaderboardMessage.messageId);
-    const data = await fetchCircleData();
+    const data = await fetchCircleData(PRIMARY_CIRCLE_ID);
     const embed = buildLeaderboardEmbed(data);
     await message.edit({ embeds: [embed] });
   } catch (err) {
@@ -359,6 +398,16 @@ async function registerCommands(clientId, token) {
           .setName('uma_id')
           .setDescription('Your Uma trainer name')
           .setRequired(true),
+      )
+      .addStringOption((option) =>
+        option
+          .setName('club')
+          .setDescription('Which club you are in')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Dust Bunny', value: PRIMARY_CIRCLE_ID },
+            { name: 'Dirt Bunny', value: SECONDARY_CIRCLE_ID },
+          ),
       )
       .setContexts(...guildAndDm)
       .setIntegrationTypes(ApplicationIntegrationType.UserInstall, ApplicationIntegrationType.GuildInstall),
@@ -423,7 +472,7 @@ async function main() {
 
       await interaction.deferReply({ ephemeral: true });
       try {
-        const data = await fetchCircleData();
+        const data = await fetchCircleData(PRIMARY_CIRCLE_ID);
         const embed = buildLeaderboardEmbed(data);
         const msg = await interaction.channel.send({ embeds: [embed] });
         leaderboardMessage = { channelId: interaction.channel.id, messageId: msg.id };
@@ -445,7 +494,8 @@ async function main() {
     } else if (interaction.commandName === 'leaderboard') {
       await interaction.deferReply();
       try {
-        const data = await fetchCircleData();
+        const circleId = getLinkedCircleId(interaction.user.id);
+        const data = await fetchCircleData(circleId);
         const embed = buildLeaderboardEmbed(data);
         await interaction.editReply({ embeds: [embed] });
       } catch (err) {
@@ -455,10 +505,12 @@ async function main() {
       await interaction.deferReply({ ephemeral: true });
       try {
         const umaId = interaction.options.getString('uma_id', true);
-        userLinks[interaction.user.id] = umaId;
+        const circleId = interaction.options.getString('club', true);
+        userLinks[interaction.user.id] = { umaId, circleId };
         saveLinks();
+        const clubName = circleId === SECONDARY_CIRCLE_ID ? 'Dirt Bunny' : 'Dust Bunny';
         await interaction.editReply({
-          content: `✅ Linked your Discord account by Uma Trainer name \`${escapeMarkdown(umaId)}\`. You can now use \`/trainer\` without specifying a name.`,
+          content: `✅ Linked your Discord account by Uma Trainer name \`${escapeMarkdown(umaId)}\` in **${clubName}**. You can now use \`/trainer\` and \`/leaderboard\` for your club.`,
         });
       } catch (err) {
         await interaction.editReply({ content: `❌ Failed to link: ${err.message}` });
@@ -466,7 +518,7 @@ async function main() {
     } else if (interaction.commandName === 'banana') {
       await interaction.deferReply();
       try {
-        const data = await fetchCircleData();
+        const data = await fetchCircleData(PRIMARY_CIRCLE_ID);
         const embed = buildBananaEmbed(data);
         await interaction.editReply({ embeds: [embed] });
       } catch (err) {
@@ -475,7 +527,8 @@ async function main() {
     } else if (interaction.commandName === 'trainer') {
       await interaction.deferReply();
       try {
-        const data = await fetchCircleData();
+        const linkedCircleId = getLinkedCircleId(interaction.user.id);
+        const data = await fetchCircleData(linkedCircleId);
         const circle = data.circle;
         const members = data.members || [];
 
@@ -484,14 +537,14 @@ async function main() {
 
         if (!targetName) {
           const linked = userLinks[interaction.user.id];
-          if (!linked) {
+          if (!linked?.umaId) {
             await interaction.editReply({
               content:
-                'You have not linked your Uma ID yet. Use `/link` to connect your Uma ID, or provide a trainer name, e.g. `/trainer Izuuuu`.',
+                'You have not linked your Uma ID yet. Use `/link` to connect your Uma ID and club, or provide a trainer name, e.g. `/trainer Izuuuu`.',
             });
             return;
           }
-          targetName = linked;
+          targetName = linked.umaId;
         }
 
         const lowerTarget = targetName.toLowerCase();
