@@ -9,11 +9,23 @@ const {
   PermissionFlagsBits,
   InteractionContextType,
   ApplicationIntegrationType,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
 } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 
-const API_URL = 'https://uma.moe/api/v4/circles?circle_id=883948934';
+const PRIMARY_CIRCLE_ID = '883948934';
+const SECONDARY_CIRCLE_ID = '419653159';
+const PRIMARY_TARGET_API = 'https://uma.moe/api/v4/circles/list?page=99&limit=1';
+const SECONDARY_TARGET_API = 'https://uma.moe/api/v4/circles/list?page=499&limit=1';
+const CIRCLE_APIS = {
+  [PRIMARY_CIRCLE_ID]: `https://uma.moe/api/v4/circles?circle_id=${PRIMARY_CIRCLE_ID}`,
+  [SECONDARY_CIRCLE_ID]: `https://uma.moe/api/v4/circles?circle_id=${SECONDARY_CIRCLE_ID}`,
+};
 const CONFIG_PATH = path.join(__dirname, 'leaderboard-config.json');
 const LINKS_PATH = path.join(__dirname, 'user-links.json');
 
@@ -24,7 +36,7 @@ const config = {
 };
 
 let leaderboardMessage = null; // { channelId, messageId }
-let userLinks = {}; // { [discordUserId]: umaId }
+let userLinks = {}; // { [discordUserId]: { umaId, circleId } }
 
 function loadConfig() {
   try {
@@ -43,7 +55,31 @@ function saveConfig() {
 function loadLinks() {
   try {
     const data = fs.readFileSync(LINKS_PATH, 'utf8');
-    userLinks = JSON.parse(data);
+    const parsed = JSON.parse(data);
+    // Backward compatibility: older format stored only trainer name string.
+    userLinks = Object.fromEntries(
+      Object.entries(parsed).map(([discordUserId, value]) => {
+        if (typeof value === 'string') {
+          return [
+            discordUserId,
+            {
+              umaId: value,
+              circleId: PRIMARY_CIRCLE_ID,
+            },
+          ];
+        }
+        return [
+          discordUserId,
+          {
+            umaId: value?.umaId || '',
+            circleId:
+              value?.circleId === SECONDARY_CIRCLE_ID
+                ? SECONDARY_CIRCLE_ID
+                : PRIMARY_CIRCLE_ID,
+          },
+        ];
+      }),
+    );
   } catch {
     userLinks = {};
   }
@@ -57,15 +93,56 @@ function saveLinks() {
   }
 }
 
-async function fetchCircleData() {
+function getCircleApiUrl(circleId) {
+  return CIRCLE_APIS[circleId] || CIRCLE_APIS[PRIMARY_CIRCLE_ID];
+}
+
+function getLinkedCircleId(discordUserId) {
+  const linked = userLinks[discordUserId];
+  if (!linked) return PRIMARY_CIRCLE_ID;
+  return linked.circleId === SECONDARY_CIRCLE_ID ? SECONDARY_CIRCLE_ID : PRIMARY_CIRCLE_ID;
+}
+
+function getUmaHeaders() {
   const headers = {};
   if (config.umaApiKey) {
     headers['X-API-Key'] = config.umaApiKey;
   }
+  return headers;
+}
 
-  const res = await fetch(API_URL, { headers });
+async function fetchUmaJson(url) {
+  const res = await fetch(url, { headers: getUmaHeaders() });
   if (!res.ok) throw new Error(`API returned ${res.status}`);
   return res.json();
+}
+
+async function fetchCircleData(circleId = PRIMARY_CIRCLE_ID) {
+  return fetchUmaJson(getCircleApiUrl(circleId));
+}
+
+function getDaysSinceJstMonthSecondMidnight(now = new Date()) {
+  const jstNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+  const jstYear = jstNow.getFullYear();
+  const jstMonth = jstNow.getMonth();
+  const jstSecondMidnight = new Date(jstYear, jstMonth, 2, 0, 0, 0, 0);
+  const elapsedMs = Math.max(0, jstNow.getTime() - jstSecondMidnight.getTime());
+  const elapsedHours = elapsedMs / (1000 * 60 * 60);
+  return Math.max(elapsedHours / 24, 1 / 24);
+}
+
+async function fetchCurrentTarget(circleId) {
+  const targetApi = circleId === SECONDARY_CIRCLE_ID ? SECONDARY_TARGET_API : PRIMARY_TARGET_API;
+  const payload = await fetchUmaJson(targetApi);
+  const firstCircle = Array.isArray(payload?.circles) ? payload.circles[0] : null;
+  if (!firstCircle) return null;
+
+  const totalPoints =
+    circleId === SECONDARY_CIRCLE_ID ? firstCircle.monthly_point : firstCircle.live_points;
+  if (typeof totalPoints !== 'number') return null;
+
+  const daysElapsed = getDaysSinceJstMonthSecondMidnight();
+  return totalPoints / 30 / daysElapsed;
 }
 
 function formatNumber(n) {
@@ -171,7 +248,54 @@ function buildTrainerEmbed(circle, member, ranks) {
   return embed;
 }
 
-function buildLeaderboardEmbed(data) {
+function buildTrainerRanks(circle, members, targetViewerId) {
+  const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
+  const enriched = (members || [])
+    .map((m) => {
+      const f = m.daily_fans || [];
+      const nz = f.filter((n) => n > 0);
+      const first = nz[0] ?? 0;
+      const latest = nz[nz.length - 1] ?? first;
+      const gain = latest - first;
+      const d = nz.length || 1;
+      const lastUp = m.last_updated ? new Date(m.last_updated) : null;
+      const active = !circleYesterdayUpdated || (lastUp && lastUp >= circleYesterdayUpdated);
+      return { ...m, totalFans: latest, monthlyGain: gain, dailyAvg: Math.round(gain / d), isActive: active };
+    })
+    .filter((m) => m.isActive);
+
+  const byTotalFans = [...enriched].sort((a, b) => b.totalFans - a.totalFans);
+  const byMonthly = [...enriched].sort((a, b) => b.monthlyGain - a.monthlyGain);
+  const byDailyAvg = [...enriched].sort((a, b) => b.dailyAvg - a.dailyAvg);
+
+  const idx = (arr) => {
+    const i = arr.findIndex((m) => m.viewer_id === targetViewerId);
+    return i >= 0 ? i + 1 : null;
+  };
+
+  return { totalFans: idx(byTotalFans), monthly: idx(byMonthly), dailyAvg: idx(byDailyAvg) };
+}
+
+function findTrainerCandidates(targetName, datasets) {
+  const lowerTarget = targetName.toLowerCase();
+
+  const exact = [];
+  const partial = [];
+  for (const dataset of datasets) {
+    for (const member of dataset.members) {
+      const lowerName = (member.trainer_name || '').toLowerCase();
+      if (lowerName === lowerTarget) {
+        exact.push({ ...dataset, member });
+      } else if (lowerName.includes(lowerTarget)) {
+        partial.push({ ...dataset, member });
+      }
+    }
+  }
+
+  return exact.length ? exact : partial;
+}
+
+function buildLeaderboardEmbed(data, currentTarget = null) {
   const circle = data.circle;
   const members = data.members || [];
 
@@ -221,8 +345,12 @@ function buildLeaderboardEmbed(data) {
 
   // Build description with stats + one codeblock table
   const lines = [];
-  lines.push(`**Current Rank:** # ${circle.live_rank}`);
+  const currentRank = circle.live_rank ?? circle.monthly_rank ?? '—';
+  lines.push(`**Current Rank:** # ${currentRank}`);
   lines.push(`**Last Month's Rank:** # ${circle.last_month_rank}`);
+  lines.push(
+    `**Current Target:** ${currentTarget == null ? '—' : formatIntWithCommas(Math.round(currentTarget))}`,
+  );
 
   if (!activeMembers.length) {
     lines.push('');
@@ -245,6 +373,138 @@ function buildLeaderboardEmbed(data) {
     .setTimestamp();
 
   return embed;
+}
+
+function getActiveMembersWithMonthlyGain(data, clubName) {
+  const circle = data.circle;
+  const members = data.members || [];
+  const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
+
+  return members
+    .map((m) => {
+      const fans = m.daily_fans || [];
+      const nonZeroFans = fans.filter((n) => n > 0);
+      const firstFans = nonZeroFans[0] ?? 0;
+      const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
+      const monthlyGain = latestFans - firstFans;
+      const lastUpdated = m.last_updated ? new Date(m.last_updated) : null;
+      const isActive =
+        !circleYesterdayUpdated || (lastUpdated && lastUpdated >= circleYesterdayUpdated);
+      return {
+        ...m,
+        clubName,
+        monthlyGain,
+        activeDays: nonZeroFans.length,
+        isActive,
+      };
+    })
+    .filter((m) => m.isActive);
+}
+
+function buildAllLeaderboardEmbeds(dustData, dirtData) {
+  const combined = [
+    ...getActiveMembersWithMonthlyGain(dustData, 'Dust'),
+    ...getActiveMembersWithMonthlyGain(dirtData, 'Dirt'),
+  ].sort((a, b) => b.monthlyGain - a.monthlyGain);
+
+  const perPage = 15;
+  const totalPages = Math.max(1, Math.ceil(combined.length / perPage));
+  const embeds = [];
+
+  for (let pageIdx = 0; pageIdx < totalPages; pageIdx += 1) {
+    const start = pageIdx * perPage;
+    const pageMembers = combined.slice(start, start + perPage);
+
+    const header =
+      'Rank  Name             Club   Monthly Fans   Daily Avg\n' +
+      '------------------------------------------------------';
+    const rows = pageMembers.map((m, idx) => {
+      const rank = `#${start + idx + 1}`.padEnd(4, ' ');
+      let name = normalizeName(m.trainer_name || 'Unknown');
+      if (name.length > 15) name = name.slice(0, 15);
+      name = name.padEnd(15, ' ');
+      const club = (m.clubName || '—').padEnd(4, ' ');
+      const monthlyFans = formatIntWithCommas(m.monthlyGain).padStart(12, ' ');
+      const days = m.activeDays || 1;
+      const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / days)).padStart(10, ' ');
+      return `${rank}  ${name} ${club}  ${monthlyFans}  ${dailyAvg}`;
+    });
+
+    const lines = [];
+    lines.push('**Combined Clubs:** Dust Bunny + Dirt Bunny');
+    lines.push(`**Total Active Members:** ${combined.length}`);
+    lines.push(`**Page:** ${pageIdx + 1}/${totalPages}`);
+    lines.push('');
+    lines.push(['```', header, ...rows, '```'].join('\n'));
+
+    embeds.push(
+      new EmbedBuilder()
+        .setColor(15844367)
+        .setTitle('🏆 All Clubs — Monthly Fans')
+        .setDescription(lines.join('\n'))
+        .setTimestamp(),
+    );
+  }
+
+  return embeds;
+}
+
+function buildLeaderboardPageButtons(pageIdx, totalPages, interactionId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`leaderboard-prev:${interactionId}`)
+      .setLabel('Previous')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(pageIdx <= 0),
+    new ButtonBuilder()
+      .setCustomId(`leaderboard-next:${interactionId}`)
+      .setLabel('Next')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(pageIdx >= totalPages - 1),
+  );
+}
+
+async function sendPaginatedEmbeds(interaction, embeds) {
+  let pageIdx = 0;
+  const totalPages = embeds.length;
+
+  await interaction.editReply({
+    embeds: [embeds[pageIdx]],
+    components: totalPages > 1 ? [buildLeaderboardPageButtons(pageIdx, totalPages, interaction.id)] : [],
+  });
+
+  if (totalPages <= 1) return;
+
+  const reply = await interaction.fetchReply();
+  while (true) {
+    try {
+      const button = await reply.awaitMessageComponent({
+        componentType: ComponentType.Button,
+        time: 120000,
+        filter: (i) =>
+          i.user.id === interaction.user.id &&
+          (i.customId === `leaderboard-prev:${interaction.id}` ||
+            i.customId === `leaderboard-next:${interaction.id}`),
+      });
+
+      if (button.customId === `leaderboard-prev:${interaction.id}`) {
+        pageIdx = Math.max(0, pageIdx - 1);
+      } else if (button.customId === `leaderboard-next:${interaction.id}`) {
+        pageIdx = Math.min(totalPages - 1, pageIdx + 1);
+      }
+
+      await button.update({
+        embeds: [embeds[pageIdx]],
+        components: [buildLeaderboardPageButtons(pageIdx, totalPages, interaction.id)],
+      });
+    } catch {
+      await interaction.editReply({
+        embeds: [embeds[pageIdx]],
+        components: [],
+      });
+      return;
+    }
+  }
 }
 
 function buildBananaEmbed(data) {
@@ -323,8 +583,11 @@ async function updateLeaderboard(client) {
   try {
     const channel = await client.channels.fetch(leaderboardMessage.channelId);
     const message = await channel.messages.fetch(leaderboardMessage.messageId);
-    const data = await fetchCircleData();
-    const embed = buildLeaderboardEmbed(data);
+    const [data, currentTarget] = await Promise.all([
+      fetchCircleData(PRIMARY_CIRCLE_ID),
+      fetchCurrentTarget(PRIMARY_CIRCLE_ID),
+    ]);
+    const embed = buildLeaderboardEmbed(data, currentTarget);
     await message.edit({ embeds: [embed] });
   } catch (err) {
     console.error('Failed to update leaderboard:', err.message);
@@ -349,6 +612,17 @@ async function registerCommands(clientId, token) {
     new SlashCommandBuilder()
       .setName('leaderboard')
       .setDescription('Show the latest Dust Bunny circle leaderboard (no auto-update)')
+      .addStringOption((option) =>
+        option
+          .setName('club')
+          .setDescription('Optional: view a specific club leaderboard')
+          .setRequired(false)
+          .addChoices(
+            { name: 'Dust Bunny', value: PRIMARY_CIRCLE_ID },
+            { name: 'Dirt Bunny', value: SECONDARY_CIRCLE_ID },
+            { name: 'All Clubs (Dust + Dirt)', value: 'all' },
+          ),
+      )
       .setContexts(...guildAndDm)
       .setIntegrationTypes(ApplicationIntegrationType.UserInstall, ApplicationIntegrationType.GuildInstall),
     new SlashCommandBuilder()
@@ -359,6 +633,16 @@ async function registerCommands(clientId, token) {
           .setName('uma_id')
           .setDescription('Your Uma trainer name')
           .setRequired(true),
+      )
+      .addStringOption((option) =>
+        option
+          .setName('club')
+          .setDescription('Which club you are in')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Dust Bunny', value: PRIMARY_CIRCLE_ID },
+            { name: 'Dirt Bunny', value: SECONDARY_CIRCLE_ID },
+          ),
       )
       .setContexts(...guildAndDm)
       .setIntegrationTypes(ApplicationIntegrationType.UserInstall, ApplicationIntegrationType.GuildInstall),
@@ -423,8 +707,11 @@ async function main() {
 
       await interaction.deferReply({ ephemeral: true });
       try {
-        const data = await fetchCircleData();
-        const embed = buildLeaderboardEmbed(data);
+        const [data, currentTarget] = await Promise.all([
+          fetchCircleData(PRIMARY_CIRCLE_ID),
+          fetchCurrentTarget(PRIMARY_CIRCLE_ID),
+        ]);
+        const embed = buildLeaderboardEmbed(data, currentTarget);
         const msg = await interaction.channel.send({ embeds: [embed] });
         leaderboardMessage = { channelId: interaction.channel.id, messageId: msg.id };
         saveConfig();
@@ -445,8 +732,26 @@ async function main() {
     } else if (interaction.commandName === 'leaderboard') {
       await interaction.deferReply();
       try {
-        const data = await fetchCircleData();
-        const embed = buildLeaderboardEmbed(data);
+        const selectedClub = interaction.options.getString('club');
+        if (selectedClub === 'all') {
+          const [dustData, dirtData] = await Promise.all([
+            fetchCircleData(PRIMARY_CIRCLE_ID),
+            fetchCircleData(SECONDARY_CIRCLE_ID),
+          ]);
+          const embeds = buildAllLeaderboardEmbeds(dustData, dirtData);
+          await sendPaginatedEmbeds(interaction, embeds);
+          return;
+        }
+
+        const circleId =
+          selectedClub === PRIMARY_CIRCLE_ID || selectedClub === SECONDARY_CIRCLE_ID
+            ? selectedClub
+            : getLinkedCircleId(interaction.user.id);
+        const [data, currentTarget] = await Promise.all([
+          fetchCircleData(circleId),
+          fetchCurrentTarget(circleId),
+        ]);
+        const embed = buildLeaderboardEmbed(data, currentTarget);
         await interaction.editReply({ embeds: [embed] });
       } catch (err) {
         await interaction.editReply({ content: `❌ Failed: ${err.message}` });
@@ -455,10 +760,12 @@ async function main() {
       await interaction.deferReply({ ephemeral: true });
       try {
         const umaId = interaction.options.getString('uma_id', true);
-        userLinks[interaction.user.id] = umaId;
+        const circleId = interaction.options.getString('club', true);
+        userLinks[interaction.user.id] = { umaId, circleId };
         saveLinks();
+        const clubName = circleId === SECONDARY_CIRCLE_ID ? 'Dirt Bunny' : 'Dust Bunny';
         await interaction.editReply({
-          content: `✅ Linked your Discord account by Uma Trainer name \`${escapeMarkdown(umaId)}\`. You can now use \`/trainer\` without specifying a name.`,
+          content: `✅ Linked your Discord account by Uma Trainer name \`${escapeMarkdown(umaId)}\` in **${clubName}**. You can now use \`/trainer\` and \`/leaderboard\` for your club.`,
         });
       } catch (err) {
         await interaction.editReply({ content: `❌ Failed to link: ${err.message}` });
@@ -466,7 +773,7 @@ async function main() {
     } else if (interaction.commandName === 'banana') {
       await interaction.deferReply();
       try {
-        const data = await fetchCircleData();
+        const data = await fetchCircleData(PRIMARY_CIRCLE_ID);
         const embed = buildBananaEmbed(data);
         await interaction.editReply({ embeds: [embed] });
       } catch (err) {
@@ -475,67 +782,112 @@ async function main() {
     } else if (interaction.commandName === 'trainer') {
       await interaction.deferReply();
       try {
-        const data = await fetchCircleData();
-        const circle = data.circle;
-        const members = data.members || [];
-
         const nameArg = interaction.options.getString('name');
         let targetName = nameArg;
 
         if (!targetName) {
           const linked = userLinks[interaction.user.id];
-          if (!linked) {
+          if (!linked?.umaId) {
             await interaction.editReply({
               content:
-                'You have not linked your Uma ID yet. Use `/link` to connect your Uma ID, or provide a trainer name, e.g. `/trainer Izuuuu`.',
+                'You have not linked your Uma ID yet. Use `/link` to connect your Uma ID and club, or provide a trainer name, e.g. `/trainer Izuuuu`.',
             });
             return;
           }
-          targetName = linked;
+          targetName = linked.umaId;
         }
 
-        const lowerTarget = targetName.toLowerCase();
-        const member =
-          members.find((m) => (m.trainer_name || '').toLowerCase() === lowerTarget) ||
-          members.find((m) => (m.trainer_name || '').toLowerCase().includes(lowerTarget));
+        const [dustData, dirtData] = await Promise.all([
+          fetchCircleData(PRIMARY_CIRCLE_ID),
+          fetchCircleData(SECONDARY_CIRCLE_ID),
+        ]);
 
-        if (!member) {
+        const datasets = [
+          {
+            circleId: PRIMARY_CIRCLE_ID,
+            clubName: 'Dust Bunny',
+            circle: dustData.circle,
+            members: dustData.members || [],
+          },
+          {
+            circleId: SECONDARY_CIRCLE_ID,
+            clubName: 'Dirt Bunny',
+            circle: dirtData.circle,
+            members: dirtData.members || [],
+          },
+        ];
+
+        const candidates = findTrainerCandidates(targetName, datasets);
+        if (!candidates.length) {
           await interaction.editReply({
-            content: `❌ Could not find trainer \`${targetName}\` in ${circle.name}.`,
+            content: `❌ Could not find trainer \`${targetName}\` in Dust Bunny or Dirt Bunny.`,
           });
           return;
         }
 
-        const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
-        const enriched = (data.members || [])
-          .map((m) => {
-            const f = m.daily_fans || [];
-            const nz = f.filter((n) => n > 0);
-            const first = nz[0] ?? 0;
-            const latest = nz[nz.length - 1] ?? first;
-            const gain = latest - first;
-            const d = nz.length || 1;
-            const lastUp = m.last_updated ? new Date(m.last_updated) : null;
-            const active = !circleYesterdayUpdated || (lastUp && lastUp >= circleYesterdayUpdated);
-            return { ...m, totalFans: latest, monthlyGain: gain, dailyAvg: Math.round(gain / d), isActive: active };
-          })
-          .filter((m) => m.isActive);
+        if (candidates.length === 1) {
+          const selected = candidates[0];
+          const ranks = buildTrainerRanks(
+            selected.circle,
+            selected.members,
+            selected.member.viewer_id,
+          );
+          const embed = buildTrainerEmbed(selected.circle, selected.member, ranks);
+          await interaction.editReply({ embeds: [embed] });
+          return;
+        }
 
-        const byTotalFans = [...enriched].sort((a, b) => b.totalFans - a.totalFans);
-        const byMonthly = [...enriched].sort((a, b) => b.monthlyGain - a.monthlyGain);
-        const byDailyAvg = [...enriched].sort((a, b) => b.dailyAvg - a.dailyAvg);
+        const limited = candidates.slice(0, 25);
+        const select = new StringSelectMenuBuilder()
+          .setCustomId(`trainer-pick:${interaction.id}`)
+          .setPlaceholder('Multiple trainers found, choose one')
+          .addOptions(
+            limited.map((c, idx) => ({
+              label: (c.member.trainer_name || 'Unknown').slice(0, 100),
+              value: String(idx),
+              description: `${c.clubName} • viewer ${c.member.viewer_id}`.slice(0, 100),
+            })),
+          );
+        const row = new ActionRowBuilder().addComponents(select);
 
-        const idx = (arr) => {
-          const i = arr.findIndex((m) => m.viewer_id === member.viewer_id);
-          return i >= 0 ? i + 1 : null;
-        };
+        await interaction.editReply({
+          content: `Found multiple matches for \`${targetName}\`. Choose one:`,
+          components: [row],
+          embeds: [],
+        });
 
-        const ranks = { totalFans: idx(byTotalFans), monthly: idx(byMonthly), dailyAvg: idx(byDailyAvg) };
+        const reply = await interaction.fetchReply();
+        const picked = await reply.awaitMessageComponent({
+          componentType: ComponentType.StringSelect,
+          time: 60000,
+          filter: (i) =>
+            i.user.id === interaction.user.id && i.customId === `trainer-pick:${interaction.id}`,
+        });
 
-        const embed = buildTrainerEmbed(circle, member, ranks);
-        await interaction.editReply({ embeds: [embed] });
+        const pickedIdx = parseInt(picked.values[0], 10);
+        const selected = limited[pickedIdx];
+        if (!selected) {
+          await picked.update({ content: '❌ Invalid selection.', components: [] });
+          return;
+        }
+
+        const ranks = buildTrainerRanks(
+          selected.circle,
+          selected.members,
+          selected.member.viewer_id,
+        );
+        const embed = buildTrainerEmbed(selected.circle, selected.member, ranks);
+        await picked.update({ content: '', components: [], embeds: [embed] });
       } catch (err) {
-        await interaction.editReply({ content: `❌ Failed: ${err.message}` });
+        if (/time/i.test(err?.message || '')) {
+          await interaction.editReply({
+            content: '⏱️ Selection timed out. Run `/trainer` again.',
+            components: [],
+            embeds: [],
+          });
+          return;
+        }
+        await interaction.editReply({ content: `❌ Failed: ${err.message}`, components: [] });
       }
     }
   });
