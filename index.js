@@ -11,6 +11,8 @@ const {
   ApplicationIntegrationType,
   ActionRowBuilder,
   StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ComponentType,
 } = require('discord.js');
 const fs = require('fs');
@@ -373,6 +375,138 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
   return embed;
 }
 
+function getActiveMembersWithMonthlyGain(data, clubName) {
+  const circle = data.circle;
+  const members = data.members || [];
+  const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
+
+  return members
+    .map((m) => {
+      const fans = m.daily_fans || [];
+      const nonZeroFans = fans.filter((n) => n > 0);
+      const firstFans = nonZeroFans[0] ?? 0;
+      const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
+      const monthlyGain = latestFans - firstFans;
+      const lastUpdated = m.last_updated ? new Date(m.last_updated) : null;
+      const isActive =
+        !circleYesterdayUpdated || (lastUpdated && lastUpdated >= circleYesterdayUpdated);
+      return {
+        ...m,
+        clubName,
+        monthlyGain,
+        activeDays: nonZeroFans.length,
+        isActive,
+      };
+    })
+    .filter((m) => m.isActive);
+}
+
+function buildAllLeaderboardEmbeds(dustData, dirtData) {
+  const combined = [
+    ...getActiveMembersWithMonthlyGain(dustData, 'Dust'),
+    ...getActiveMembersWithMonthlyGain(dirtData, 'Dirt'),
+  ].sort((a, b) => b.monthlyGain - a.monthlyGain);
+
+  const perPage = 15;
+  const totalPages = Math.max(1, Math.ceil(combined.length / perPage));
+  const embeds = [];
+
+  for (let pageIdx = 0; pageIdx < totalPages; pageIdx += 1) {
+    const start = pageIdx * perPage;
+    const pageMembers = combined.slice(start, start + perPage);
+
+    const header =
+      'Rank  Name             Club   Monthly Fans   Daily Avg\n' +
+      '------------------------------------------------------';
+    const rows = pageMembers.map((m, idx) => {
+      const rank = `#${start + idx + 1}`.padEnd(4, ' ');
+      let name = normalizeName(m.trainer_name || 'Unknown');
+      if (name.length > 15) name = name.slice(0, 15);
+      name = name.padEnd(15, ' ');
+      const club = (m.clubName || '—').padEnd(4, ' ');
+      const monthlyFans = formatIntWithCommas(m.monthlyGain).padStart(12, ' ');
+      const days = m.activeDays || 1;
+      const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / days)).padStart(10, ' ');
+      return `${rank}  ${name} ${club}  ${monthlyFans}  ${dailyAvg}`;
+    });
+
+    const lines = [];
+    lines.push('**Combined Clubs:** Dust Bunny + Dirt Bunny');
+    lines.push(`**Total Active Members:** ${combined.length}`);
+    lines.push(`**Page:** ${pageIdx + 1}/${totalPages}`);
+    lines.push('');
+    lines.push(['```', header, ...rows, '```'].join('\n'));
+
+    embeds.push(
+      new EmbedBuilder()
+        .setColor(15844367)
+        .setTitle('🏆 All Clubs — Monthly Fans')
+        .setDescription(lines.join('\n'))
+        .setTimestamp(),
+    );
+  }
+
+  return embeds;
+}
+
+function buildLeaderboardPageButtons(pageIdx, totalPages, interactionId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`leaderboard-prev:${interactionId}`)
+      .setLabel('Previous')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(pageIdx <= 0),
+    new ButtonBuilder()
+      .setCustomId(`leaderboard-next:${interactionId}`)
+      .setLabel('Next')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(pageIdx >= totalPages - 1),
+  );
+}
+
+async function sendPaginatedEmbeds(interaction, embeds) {
+  let pageIdx = 0;
+  const totalPages = embeds.length;
+
+  await interaction.editReply({
+    embeds: [embeds[pageIdx]],
+    components: totalPages > 1 ? [buildLeaderboardPageButtons(pageIdx, totalPages, interaction.id)] : [],
+  });
+
+  if (totalPages <= 1) return;
+
+  const reply = await interaction.fetchReply();
+  while (true) {
+    try {
+      const button = await reply.awaitMessageComponent({
+        componentType: ComponentType.Button,
+        time: 120000,
+        filter: (i) =>
+          i.user.id === interaction.user.id &&
+          (i.customId === `leaderboard-prev:${interaction.id}` ||
+            i.customId === `leaderboard-next:${interaction.id}`),
+      });
+
+      if (button.customId === `leaderboard-prev:${interaction.id}`) {
+        pageIdx = Math.max(0, pageIdx - 1);
+      } else if (button.customId === `leaderboard-next:${interaction.id}`) {
+        pageIdx = Math.min(totalPages - 1, pageIdx + 1);
+      }
+
+      await button.update({
+        embeds: [embeds[pageIdx]],
+        components: [buildLeaderboardPageButtons(pageIdx, totalPages, interaction.id)],
+      });
+    } catch {
+      await interaction.editReply({
+        embeds: [embeds[pageIdx]],
+        components: [],
+      });
+      return;
+    }
+  }
+}
+
 function buildBananaEmbed(data) {
   const circle = data.circle;
   const members = data.members || [];
@@ -486,6 +620,7 @@ async function registerCommands(clientId, token) {
           .addChoices(
             { name: 'Dust Bunny', value: PRIMARY_CIRCLE_ID },
             { name: 'Dirt Bunny', value: SECONDARY_CIRCLE_ID },
+            { name: 'All Clubs (Dust + Dirt)', value: 'all' },
           ),
       )
       .setContexts(...guildAndDm)
@@ -598,6 +733,16 @@ async function main() {
       await interaction.deferReply();
       try {
         const selectedClub = interaction.options.getString('club');
+        if (selectedClub === 'all') {
+          const [dustData, dirtData] = await Promise.all([
+            fetchCircleData(PRIMARY_CIRCLE_ID),
+            fetchCircleData(SECONDARY_CIRCLE_ID),
+          ]);
+          const embeds = buildAllLeaderboardEmbeds(dustData, dirtData);
+          await sendPaginatedEmbeds(interaction, embeds);
+          return;
+        }
+
         const circleId =
           selectedClub === PRIMARY_CIRCLE_ID || selectedClub === SECONDARY_CIRCLE_ID
             ? selectedClub
