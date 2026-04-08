@@ -18,6 +18,8 @@ const path = require('path');
 
 const PRIMARY_CIRCLE_ID = '883948934';
 const SECONDARY_CIRCLE_ID = '419653159';
+const PRIMARY_TARGET_API = 'https://uma.moe/api/v4/circles/list?page=99&limit=1';
+const SECONDARY_TARGET_API = 'https://uma.moe/api/v4/circles/list?page=499&limit=1';
 const CIRCLE_APIS = {
   [PRIMARY_CIRCLE_ID]: `https://uma.moe/api/v4/circles?circle_id=${PRIMARY_CIRCLE_ID}`,
   [SECONDARY_CIRCLE_ID]: `https://uma.moe/api/v4/circles?circle_id=${SECONDARY_CIRCLE_ID}`,
@@ -99,15 +101,46 @@ function getLinkedCircleId(discordUserId) {
   return linked.circleId === SECONDARY_CIRCLE_ID ? SECONDARY_CIRCLE_ID : PRIMARY_CIRCLE_ID;
 }
 
-async function fetchCircleData(circleId = PRIMARY_CIRCLE_ID) {
+function getUmaHeaders() {
   const headers = {};
   if (config.umaApiKey) {
     headers['X-API-Key'] = config.umaApiKey;
   }
+  return headers;
+}
 
-  const res = await fetch(getCircleApiUrl(circleId), { headers });
+async function fetchUmaJson(url) {
+  const res = await fetch(url, { headers: getUmaHeaders() });
   if (!res.ok) throw new Error(`API returned ${res.status}`);
   return res.json();
+}
+
+async function fetchCircleData(circleId = PRIMARY_CIRCLE_ID) {
+  return fetchUmaJson(getCircleApiUrl(circleId));
+}
+
+function getDaysSinceJstMonthSecondMidnight(now = new Date()) {
+  const jstNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
+  const jstYear = jstNow.getFullYear();
+  const jstMonth = jstNow.getMonth();
+  const jstSecondMidnight = new Date(jstYear, jstMonth, 2, 0, 0, 0, 0);
+  const elapsedMs = Math.max(0, jstNow.getTime() - jstSecondMidnight.getTime());
+  const elapsedHours = elapsedMs / (1000 * 60 * 60);
+  return Math.max(elapsedHours / 24, 1 / 24);
+}
+
+async function fetchCurrentTarget(circleId) {
+  const targetApi = circleId === SECONDARY_CIRCLE_ID ? SECONDARY_TARGET_API : PRIMARY_TARGET_API;
+  const payload = await fetchUmaJson(targetApi);
+  const firstCircle = Array.isArray(payload?.circles) ? payload.circles[0] : null;
+  if (!firstCircle) return null;
+
+  const totalPoints =
+    circleId === SECONDARY_CIRCLE_ID ? firstCircle.monthly_point : firstCircle.live_points;
+  if (typeof totalPoints !== 'number') return null;
+
+  const daysElapsed = getDaysSinceJstMonthSecondMidnight();
+  return totalPoints / 30 / daysElapsed;
 }
 
 function formatNumber(n) {
@@ -260,7 +293,7 @@ function findTrainerCandidates(targetName, datasets) {
   return exact.length ? exact : partial;
 }
 
-function buildLeaderboardEmbed(data) {
+function buildLeaderboardEmbed(data, currentTarget = null) {
   const circle = data.circle;
   const members = data.members || [];
 
@@ -313,6 +346,9 @@ function buildLeaderboardEmbed(data) {
   const currentRank = circle.live_rank ?? circle.monthly_rank ?? '—';
   lines.push(`**Current Rank:** # ${currentRank}`);
   lines.push(`**Last Month's Rank:** # ${circle.last_month_rank}`);
+  lines.push(
+    `**Current Target:** ${currentTarget == null ? '—' : formatIntWithCommas(Math.round(currentTarget))}`,
+  );
 
   if (!activeMembers.length) {
     lines.push('');
@@ -413,8 +449,11 @@ async function updateLeaderboard(client) {
   try {
     const channel = await client.channels.fetch(leaderboardMessage.channelId);
     const message = await channel.messages.fetch(leaderboardMessage.messageId);
-    const data = await fetchCircleData(PRIMARY_CIRCLE_ID);
-    const embed = buildLeaderboardEmbed(data);
+    const [data, currentTarget] = await Promise.all([
+      fetchCircleData(PRIMARY_CIRCLE_ID),
+      fetchCurrentTarget(PRIMARY_CIRCLE_ID),
+    ]);
+    const embed = buildLeaderboardEmbed(data, currentTarget);
     await message.edit({ embeds: [embed] });
   } catch (err) {
     console.error('Failed to update leaderboard:', err.message);
@@ -533,8 +572,11 @@ async function main() {
 
       await interaction.deferReply({ ephemeral: true });
       try {
-        const data = await fetchCircleData(PRIMARY_CIRCLE_ID);
-        const embed = buildLeaderboardEmbed(data);
+        const [data, currentTarget] = await Promise.all([
+          fetchCircleData(PRIMARY_CIRCLE_ID),
+          fetchCurrentTarget(PRIMARY_CIRCLE_ID),
+        ]);
+        const embed = buildLeaderboardEmbed(data, currentTarget);
         const msg = await interaction.channel.send({ embeds: [embed] });
         leaderboardMessage = { channelId: interaction.channel.id, messageId: msg.id };
         saveConfig();
@@ -560,8 +602,11 @@ async function main() {
           selectedClub === PRIMARY_CIRCLE_ID || selectedClub === SECONDARY_CIRCLE_ID
             ? selectedClub
             : getLinkedCircleId(interaction.user.id);
-        const data = await fetchCircleData(circleId);
-        const embed = buildLeaderboardEmbed(data);
+        const [data, currentTarget] = await Promise.all([
+          fetchCircleData(circleId),
+          fetchCurrentTarget(circleId),
+        ]);
+        const embed = buildLeaderboardEmbed(data, currentTarget);
         await interaction.editReply({ embeds: [embed] });
       } catch (err) {
         await interaction.editReply({ content: `❌ Failed: ${err.message}` });
