@@ -407,7 +407,7 @@ function buildAllLeaderboardEmbeds(dustData, dirtData) {
     ...getActiveMembersWithMonthlyGain(dirtData, 'Dirt'),
   ].sort((a, b) => b.monthlyGain - a.monthlyGain);
 
-  const perPage = 15;
+  const perPage = 30;
   const totalPages = Math.max(1, Math.ceil(combined.length / perPage));
   const embeds = [];
 
