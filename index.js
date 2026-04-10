@@ -351,7 +351,7 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
 
   const activeMembers = members
     .map((m) => {
-      const fans = m.daily_fans || [];
+      const fans = getDailyFansForTrainer(m);
       const nonZeroFans = fans.filter((n) => n > 0);
       const firstFans = nonZeroFans[0] ?? 0;
       const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
@@ -430,7 +430,7 @@ function getActiveMembersWithMonthlyGain(data, clubName) {
 
   return members
     .map((m) => {
-      const fans = m.daily_fans || [];
+      const fans = getDailyFansForTrainer(m);
       const nonZeroFans = fans.filter((n) => n > 0);
       const firstFans = nonZeroFans[0] ?? 0;
       const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
@@ -563,7 +563,7 @@ function buildBananaEmbed(data) {
 
   const activeMembers = members
     .map((m) => {
-      const fans = m.daily_fans || [];
+      const fans = getDailyFansForTrainer(m);
       const nonZeroFans = fans.filter((n) => n > 0);
       const firstFans = nonZeroFans[0] ?? 0;
       const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
