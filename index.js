@@ -28,7 +28,6 @@ const CIRCLE_APIS = {
 };
 const CONFIG_PATH = path.join(__dirname, 'leaderboard-config.json');
 const LINKS_PATH = path.join(__dirname, 'user-links.json');
-const APRIL_2026_OVERRIDE_PATH = path.join(__dirname, 'user-override-april2026.txt');
 
 const config = {
   token: process.env.DISCORD_BOT_TOKEN,
@@ -112,53 +111,6 @@ function getUmaHeaders() {
   return headers;
 }
 
-function normalizeOverrideName(name) {
-  return String(name || '')
-    .normalize('NFKC')
-    .replace(/\u3000/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-}
-
-function loadApril2026Overrides() {
-  const overrides = new Map();
-  try {
-    const raw = fs.readFileSync(APRIL_2026_OVERRIDE_PATH, 'utf8');
-    const lines = raw.split(/\r?\n/);
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const commaIdx = trimmed.lastIndexOf(',');
-      if (commaIdx <= 0) continue;
-      const name = trimmed.slice(0, commaIdx).trim();
-      const value = Number(trimmed.slice(commaIdx + 1).trim());
-      if (!name || !Number.isFinite(value)) continue;
-      overrides.set(normalizeOverrideName(name), Math.trunc(value));
-    }
-  } catch {
-    // Temporary optional override file; ignore when missing/unreadable.
-  }
-  return overrides;
-}
-
-function isApril2026InJst(now = new Date()) {
-  const jstNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
-  return jstNow.getFullYear() === 2026 && jstNow.getMonth() === 3;
-}
-
-const april2026DailyFansOverrides = loadApril2026Overrides();
-
-function getDailyFansForTrainer(member) {
-  const fans = Array.isArray(member?.daily_fans) ? [...member.daily_fans] : [];
-  if (!isApril2026InJst()) return fans;
-  const key = normalizeOverrideName(member?.trainer_name || '');
-  const override = april2026DailyFansOverrides.get(key);
-  if (override == null) return fans;
-  fans[0] = override;
-  return fans;
-}
-
 async function fetchUmaJson(url) {
   const res = await fetch(url, { headers: getUmaHeaders() });
   if (!res.ok) throw new Error(`API returned ${res.status}`);
@@ -219,7 +171,7 @@ function normalizeName(raw) {
 }
 
 function buildTrainerEmbed(circle, member, ranks) {
-  const fans = getDailyFansForTrainer(member);
+  const fans = member.daily_fans || [];
   const nonZeroFans = fans.filter((n) => n > 0);
   const firstFans = nonZeroFans[0] ?? 0;
   const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
@@ -300,7 +252,7 @@ function buildTrainerRanks(circle, members, targetViewerId) {
   const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
   const enriched = (members || [])
     .map((m) => {
-      const f = getDailyFansForTrainer(m);
+      const f = m.daily_fans || [];
       const nz = f.filter((n) => n > 0);
       const first = nz[0] ?? 0;
       const latest = nz[nz.length - 1] ?? first;
