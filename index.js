@@ -697,7 +697,7 @@ async function main() {
     intents: [GatewayIntentBits.Guilds],
   });
 
-  client.once('ready', async () => {
+  client.once('clientReady', async () => {
     console.log(`Logged in as ${client.user.tag}`);
     await registerCommands(client.user.id, config.token);
 
