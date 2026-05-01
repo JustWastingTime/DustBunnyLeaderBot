@@ -121,11 +121,26 @@ async function fetchCircleData(circleId = PRIMARY_CIRCLE_ID) {
   return fetchUmaJson(getCircleApiUrl(circleId));
 }
 
-function getDaysSinceJstMonthSecondMidnight(now = new Date()) {
+// The monthly tracking period boundary is day 2 at 00:00 JST.
+// Day 1 of any JST calendar month still belongs to the *previous*
+// month's period (e.g. June 1 JST counts as May data).
+function getEffectiveJstPeriod(now = new Date()) {
   const jstNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
-  const jstYear = jstNow.getFullYear();
-  const jstMonth = jstNow.getMonth();
-  const jstSecondMidnight = new Date(jstYear, jstMonth, 2, 0, 0, 0, 0);
+  let year = jstNow.getFullYear();
+  let month = jstNow.getMonth();
+  if (jstNow.getDate() < 2) {
+    month -= 1;
+    if (month < 0) {
+      month = 11;
+      year -= 1;
+    }
+  }
+  return { year, month, jstNow };
+}
+
+function getDaysSinceJstMonthSecondMidnight(now = new Date()) {
+  const { year, month, jstNow } = getEffectiveJstPeriod(now);
+  const jstSecondMidnight = new Date(year, month, 2, 0, 0, 0, 0);
   const elapsedMs = Math.max(0, jstNow.getTime() - jstSecondMidnight.getTime());
   const elapsedHours = elapsedMs / (1000 * 60 * 60);
   return Math.max(elapsedHours / 24, 1 / 24);
@@ -176,7 +191,9 @@ function buildTrainerEmbed(circle, member, ranks) {
   const firstFans = nonZeroFans[0] ?? 0;
   const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
   const monthlyGain = latestFans - firstFans;
-  const days = nonZeroFans.length || 1;
+  // daily_fans index 0 is the baseline (end of previous month / start of new
+  // month), so the number of day intervals played is length - 1.
+  const days = Math.max(1, nonZeroFans.length - 1);
   const dailyAvg = Math.round(monthlyGain / days);
 
   const title = `${member.trainer_name} — Trainer Data`;
@@ -257,7 +274,7 @@ function buildTrainerRanks(circle, members, targetViewerId) {
       const first = nz[0] ?? 0;
       const latest = nz[nz.length - 1] ?? first;
       const gain = latest - first;
-      const d = nz.length || 1;
+      const d = Math.max(1, nz.length - 1);
       const lastUp = m.last_updated ? new Date(m.last_updated) : null;
       const active = !circleYesterdayUpdated || (lastUp && lastUp >= circleYesterdayUpdated);
       return { ...m, totalFans: latest, monthlyGain: gain, dailyAvg: Math.round(gain / d), isActive: active };
@@ -338,7 +355,7 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
     if (name.length > 15) name = name.slice(0, 15);
     name = name.padEnd(15, ' ');
     const totalFans = formatIntWithCommas(m.monthlyGain).padStart(11, ' ');
-    const days = m.activeDays || 1;
+    const days = Math.max(1, m.activeDays - 1);
     const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / days)).padStart(10, ' ');
     return `${rank}  ${name} ${totalFans}  ${dailyAvg}`;
   });
@@ -425,7 +442,7 @@ function buildAllLeaderboardEmbeds(dustData, dirtData) {
       name = name.padEnd(15, ' ');
       const club = (m.clubName || '—').padEnd(4, ' ');
       const monthlyFans = formatIntWithCommas(m.monthlyGain).padStart(12, ' ');
-      const days = m.activeDays || 1;
+      const days = Math.max(1, m.activeDays - 1);
       const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / days)).padStart(10, ' ');
       return `${rank}  ${name} ${club}  ${monthlyFans}  ${dailyAvg}`;
     });
@@ -551,7 +568,7 @@ function buildBananaEmbed(data) {
     if (name.length > nameW) name = name.slice(0, nameW);
     name = name.padEnd(nameW, ' ');
     const monthlyFans = formatIntWithCommas(m.monthlyGain).padStart(monthlyW, ' ');
-    const days = m.activeDays || 1;
+    const days = Math.max(1, m.activeDays - 1);
     const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / days)).padStart(dailyW, ' ');
     return name + '  ' + monthlyFans + '  ' + dailyAvg;
   });
