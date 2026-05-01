@@ -142,9 +142,27 @@ function loadApril2026Overrides() {
   return overrides;
 }
 
-function isApril2026InJst(now = new Date()) {
+// Returns the "effective" JST year/month for the active monthly period.
+// The monthly period boundary is day 2 at 00:00 JST, so day 1 of any
+// calendar month JST still belongs to the previous month's period
+// (e.g. May 1 JST counts as April).
+function getEffectiveJstPeriod(now = new Date()) {
   const jstNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
-  return jstNow.getFullYear() === 2026 && jstNow.getMonth() === 3;
+  let year = jstNow.getFullYear();
+  let month = jstNow.getMonth();
+  if (jstNow.getDate() < 2) {
+    month -= 1;
+    if (month < 0) {
+      month = 11;
+      year -= 1;
+    }
+  }
+  return { year, month, jstNow };
+}
+
+function isApril2026InJst(now = new Date()) {
+  const { year, month } = getEffectiveJstPeriod(now);
+  return year === 2026 && month === 3;
 }
 
 const april2026DailyFansOverrides = loadApril2026Overrides();
@@ -170,10 +188,8 @@ async function fetchCircleData(circleId = PRIMARY_CIRCLE_ID) {
 }
 
 function getDaysSinceJstMonthSecondMidnight(now = new Date()) {
-  const jstNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
-  const jstYear = jstNow.getFullYear();
-  const jstMonth = jstNow.getMonth();
-  const jstSecondMidnight = new Date(jstYear, jstMonth, 2, 0, 0, 0, 0);
+  const { year, month, jstNow } = getEffectiveJstPeriod(now);
+  const jstSecondMidnight = new Date(year, month, 2, 0, 0, 0, 0);
   const elapsedMs = Math.max(0, jstNow.getTime() - jstSecondMidnight.getTime());
   const elapsedHours = elapsedMs / (1000 * 60 * 60);
   return Math.max(elapsedHours / 24, 1 / 24);
