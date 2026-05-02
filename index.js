@@ -185,9 +185,45 @@ function normalizeName(raw) {
   return name;
 }
 
+// The API occasionally returns a negative number as the first entry of
+// `daily_fans` (the previous-month baseline). Treat its magnitude as the
+// baseline so monthly-gain math doesn't silently drop the member's first day.
+function normalizeDailyFans(rawFans) {
+  const fans = Array.isArray(rawFans) ? rawFans.slice() : [];
+  if (fans.length > 0 && typeof fans[0] === 'number' && fans[0] < 0) {
+    fans[0] = Math.abs(fans[0]);
+  }
+  return fans.filter((n) => typeof n === 'number' && n > 0);
+}
+
+function getMemberLastUpdatedMs(member) {
+  if (!member?.last_updated) return null;
+  const t = new Date(member.last_updated).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+// Members still in the club are all refreshed together, so anyone whose
+// `last_updated` lags meaningfully behind the freshest member has effectively
+// left the circle. We use a 2h tolerance to absorb normal scrape jitter.
+const ACTIVE_LAG_TOLERANCE_MS = 2 * 60 * 60 * 1000;
+
+function getActiveCutoffMs(members) {
+  const stamps = (members || [])
+    .map(getMemberLastUpdatedMs)
+    .filter((t) => t != null);
+  if (!stamps.length) return null;
+  return Math.max(...stamps) - ACTIVE_LAG_TOLERANCE_MS;
+}
+
+function isMemberActive(member, cutoffMs) {
+  const ts = getMemberLastUpdatedMs(member);
+  if (ts == null) return false;
+  if (cutoffMs == null) return true;
+  return ts >= cutoffMs;
+}
+
 function buildTrainerEmbed(circle, member, ranks) {
-  const fans = member.daily_fans || [];
-  const nonZeroFans = fans.filter((n) => n > 0);
+  const nonZeroFans = normalizeDailyFans(member.daily_fans);
   const firstFans = nonZeroFans[0] ?? 0;
   const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
   const monthlyGain = latestFans - firstFans;
@@ -266,20 +302,17 @@ function buildTrainerEmbed(circle, member, ranks) {
 }
 
 function buildTrainerRanks(circle, members, targetViewerId) {
-  const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
+  const cutoff = getActiveCutoffMs(members);
   const enriched = (members || [])
+    .filter((m) => isMemberActive(m, cutoff))
     .map((m) => {
-      const f = m.daily_fans || [];
-      const nz = f.filter((n) => n > 0);
+      const nz = normalizeDailyFans(m.daily_fans);
       const first = nz[0] ?? 0;
       const latest = nz[nz.length - 1] ?? first;
       const gain = latest - first;
       const d = Math.max(1, nz.length - 1);
-      const lastUp = m.last_updated ? new Date(m.last_updated) : null;
-      const active = !circleYesterdayUpdated || (lastUp && lastUp >= circleYesterdayUpdated);
-      return { ...m, totalFans: latest, monthlyGain: gain, dailyAvg: Math.round(gain / d), isActive: active };
-    })
-    .filter((m) => m.isActive);
+      return { ...m, totalFans: latest, monthlyGain: gain, dailyAvg: Math.round(gain / d) };
+    });
 
   const byTotalFans = [...enriched].sort((a, b) => b.totalFans - a.totalFans);
   const byMonthly = [...enriched].sort((a, b) => b.monthlyGain - a.monthlyGain);
@@ -316,27 +349,22 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
   const circle = data.circle;
   const members = data.members || [];
 
-  const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
+  const cutoff = getActiveCutoffMs(members);
 
   const activeMembers = members
+    .filter((m) => isMemberActive(m, cutoff))
     .map((m) => {
-      const fans = m.daily_fans || [];
-      const nonZeroFans = fans.filter((n) => n > 0);
+      const nonZeroFans = normalizeDailyFans(m.daily_fans);
       const firstFans = nonZeroFans[0] ?? 0;
       const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
       const monthlyGain = latestFans - firstFans;
-      const lastUpdated = m.last_updated ? new Date(m.last_updated) : null;
-      const isActive =
-        !circleYesterdayUpdated || (lastUpdated && lastUpdated >= circleYesterdayUpdated);
       return {
         ...m,
         currentFans: latestFans,
         monthlyGain,
-        isActive,
         activeDays: nonZeroFans.length,
       };
     })
-    .filter((m) => m.isActive)
     .sort((a, b) => b.monthlyGain - a.monthlyGain);
 
   const dailyDelta =
@@ -393,29 +421,23 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
 }
 
 function getActiveMembersWithMonthlyGain(data, clubName) {
-  const circle = data.circle;
   const members = data.members || [];
-  const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
+  const cutoff = getActiveCutoffMs(members);
 
   return members
+    .filter((m) => isMemberActive(m, cutoff))
     .map((m) => {
-      const fans = m.daily_fans || [];
-      const nonZeroFans = fans.filter((n) => n > 0);
+      const nonZeroFans = normalizeDailyFans(m.daily_fans);
       const firstFans = nonZeroFans[0] ?? 0;
       const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
       const monthlyGain = latestFans - firstFans;
-      const lastUpdated = m.last_updated ? new Date(m.last_updated) : null;
-      const isActive =
-        !circleYesterdayUpdated || (lastUpdated && lastUpdated >= circleYesterdayUpdated);
       return {
         ...m,
         clubName,
         monthlyGain,
         activeDays: nonZeroFans.length,
-        isActive,
       };
-    })
-    .filter((m) => m.isActive);
+    });
 }
 
 function buildAllLeaderboardEmbeds(dustData, dirtData) {
@@ -525,29 +547,23 @@ async function sendPaginatedEmbeds(interaction, embeds) {
 }
 
 function buildBananaEmbed(data) {
-  const circle = data.circle;
   const members = data.members || [];
 
-  const circleYesterdayUpdated = circle.yesterday_updated ? new Date(circle.yesterday_updated) : null;
+  const cutoff = getActiveCutoffMs(members);
 
   const activeMembers = members
+    .filter((m) => isMemberActive(m, cutoff))
     .map((m) => {
-      const fans = m.daily_fans || [];
-      const nonZeroFans = fans.filter((n) => n > 0);
+      const nonZeroFans = normalizeDailyFans(m.daily_fans);
       const firstFans = nonZeroFans[0] ?? 0;
       const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
       const monthlyGain = latestFans - firstFans;
-      const lastUpdated = m.last_updated ? new Date(m.last_updated) : null;
-      const isActive =
-        !circleYesterdayUpdated || (lastUpdated && lastUpdated >= circleYesterdayUpdated);
       return {
         ...m,
         monthlyGain,
-        isActive,
         activeDays: nonZeroFans.length,
       };
     })
-    .filter((m) => m.isActive)
     .sort((a, b) => b.monthlyGain - a.monthlyGain);
 
   const bananaIdx = activeMembers.findIndex(
