@@ -185,15 +185,61 @@ function normalizeName(raw) {
   return name;
 }
 
-// The API occasionally returns a negative number as the first entry of
-// `daily_fans` (the previous-month baseline). Treat its magnitude as the
-// baseline so monthly-gain math doesn't silently drop the member's first day.
-function normalizeDailyFans(rawFans) {
-  const fans = Array.isArray(rawFans) ? rawFans.slice() : [];
-  if (fans.length > 0 && typeof fans[0] === 'number' && fans[0] < 0) {
-    fans[0] = Math.abs(fans[0]);
+function getMemberFanStats(rawFans) {
+  const fans = Array.isArray(rawFans) ? rawFans.filter((n) => typeof n === 'number') : [];
+  const lastPositiveIdx = fans.reduce((idx, n, i) => (n > 0 ? i : idx), -1);
+  if (lastPositiveIdx < 0) {
+    return {
+      dailyFans: [],
+      monthlyGain: 0,
+      firstFans: 0,
+      latestFans: 0,
+      averageDays: 1,
+      activeDays: 0,
+    };
   }
-  return fans.filter((n) => typeof n === 'number' && n > 0);
+
+  // Ignore trailing zeros after the last positive day (future calendar days).
+  const trimmed = fans.slice(0, lastPositiveIdx + 1);
+
+  // Known API quirk: first value can be negative baseline for active members.
+  const hasLeadingNegativeBaseline = trimmed[0] < 0 && trimmed.slice(1).every((n) => n >= 0);
+  let joinedMidMonth = false;
+  let dailyFans;
+
+  if (hasLeadingNegativeBaseline) {
+    dailyFans = [Math.abs(trimmed[0]), ...trimmed.slice(1)];
+  } else {
+    const firstNonNegativeIdx = trimmed.findIndex((n) => n >= 0);
+    if (firstNonNegativeIdx < 0) {
+      return {
+        dailyFans: [],
+        monthlyGain: 0,
+        firstFans: 0,
+        latestFans: 0,
+        averageDays: 1,
+        activeDays: 0,
+      };
+    }
+    joinedMidMonth = firstNonNegativeIdx > 0 && trimmed.slice(0, firstNonNegativeIdx).some((n) => n < 0);
+    dailyFans = trimmed.slice(firstNonNegativeIdx).map((n) => (n < 0 ? 0 : n));
+  }
+
+  const firstFans = dailyFans[0] ?? 0;
+  const latestFans = dailyFans[dailyFans.length - 1] ?? firstFans;
+  const monthlyGain = latestFans - firstFans;
+  const averageDays = joinedMidMonth
+    ? Math.max(1, dailyFans.length)
+    : Math.max(1, dailyFans.length - 1);
+
+  return {
+    dailyFans,
+    monthlyGain,
+    firstFans,
+    latestFans,
+    averageDays,
+    activeDays: dailyFans.length,
+  };
 }
 
 function getMemberLastUpdatedMs(member) {
@@ -223,28 +269,22 @@ function isMemberActive(member, cutoffMs) {
 }
 
 function buildTrainerEmbed(circle, member, ranks) {
-  const nonZeroFans = normalizeDailyFans(member.daily_fans);
-  const firstFans = nonZeroFans[0] ?? 0;
-  const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
-  const monthlyGain = latestFans - firstFans;
-  // daily_fans index 0 is the baseline (end of previous month / start of new
-  // month), so the number of day intervals played is length - 1.
-  const days = Math.max(1, nonZeroFans.length - 1);
-  const dailyAvg = Math.round(monthlyGain / days);
+  const fanStats = getMemberFanStats(member.daily_fans);
+  const dailyAvg = Math.round(fanStats.monthlyGain / fanStats.averageDays);
 
   const title = `${member.trainer_name} — Trainer Data`;
 
   const r = (n) => (n != null ? ` (#${n})` : '');
   const descriptionLines = [
-    `**🔶 Total Fans:** ${formatIntWithCommas(latestFans)}${r(ranks?.totalFans)}\n`,
-    `**📆 Monthly Fans:** ${formatIntWithCommas(monthlyGain)}${r(ranks?.monthly)}\n`,
+    `**🔶 Total Fans:** ${formatIntWithCommas(fanStats.latestFans)}${r(ranks?.totalFans)}\n`,
+    `**📆 Monthly Fans:** ${formatIntWithCommas(fanStats.monthlyGain)}${r(ranks?.monthly)}\n`,
     `**📊 Daily Average:** ${formatIntWithCommas(dailyAvg)}${r(ranks?.dailyAvg)}\n`,
   ];
 
   // Build chart: daily gain = fans that day minus previous day (start from day 2)
-  const chartData = nonZeroFans
+  const chartData = fanStats.dailyFans
     .slice(1)
-    .map((v, i) => Math.max(0, v - nonZeroFans[i]));
+    .map((v, i) => Math.max(0, v - fanStats.dailyFans[i]));
   const labels = chartData.map((_, idx) => `Day ${idx + 1}`);
 
   const qcConfig = {
@@ -306,12 +346,13 @@ function buildTrainerRanks(circle, members, targetViewerId) {
   const enriched = (members || [])
     .filter((m) => isMemberActive(m, cutoff))
     .map((m) => {
-      const nz = normalizeDailyFans(m.daily_fans);
-      const first = nz[0] ?? 0;
-      const latest = nz[nz.length - 1] ?? first;
-      const gain = latest - first;
-      const d = Math.max(1, nz.length - 1);
-      return { ...m, totalFans: latest, monthlyGain: gain, dailyAvg: Math.round(gain / d) };
+      const fanStats = getMemberFanStats(m.daily_fans);
+      return {
+        ...m,
+        totalFans: fanStats.latestFans,
+        monthlyGain: fanStats.monthlyGain,
+        dailyAvg: Math.round(fanStats.monthlyGain / fanStats.averageDays),
+      };
     });
 
   const byTotalFans = [...enriched].sort((a, b) => b.totalFans - a.totalFans);
@@ -354,15 +395,12 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
   const activeMembers = members
     .filter((m) => isMemberActive(m, cutoff))
     .map((m) => {
-      const nonZeroFans = normalizeDailyFans(m.daily_fans);
-      const firstFans = nonZeroFans[0] ?? 0;
-      const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
-      const monthlyGain = latestFans - firstFans;
+      const fanStats = getMemberFanStats(m.daily_fans);
       return {
         ...m,
-        currentFans: latestFans,
-        monthlyGain,
-        activeDays: nonZeroFans.length,
+        currentFans: fanStats.latestFans,
+        monthlyGain: fanStats.monthlyGain,
+        averageDays: fanStats.averageDays,
       };
     })
     .sort((a, b) => b.monthlyGain - a.monthlyGain);
@@ -383,8 +421,7 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
     if (name.length > 15) name = name.slice(0, 15);
     name = name.padEnd(15, ' ');
     const totalFans = formatIntWithCommas(m.monthlyGain).padStart(11, ' ');
-    const days = Math.max(1, m.activeDays - 1);
-    const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / days)).padStart(10, ' ');
+    const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / m.averageDays)).padStart(10, ' ');
     return `${rank}  ${name} ${totalFans}  ${dailyAvg}`;
   });
 
@@ -427,15 +464,12 @@ function getActiveMembersWithMonthlyGain(data, clubName) {
   return members
     .filter((m) => isMemberActive(m, cutoff))
     .map((m) => {
-      const nonZeroFans = normalizeDailyFans(m.daily_fans);
-      const firstFans = nonZeroFans[0] ?? 0;
-      const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
-      const monthlyGain = latestFans - firstFans;
+      const fanStats = getMemberFanStats(m.daily_fans);
       return {
         ...m,
         clubName,
-        monthlyGain,
-        activeDays: nonZeroFans.length,
+        monthlyGain: fanStats.monthlyGain,
+        averageDays: fanStats.averageDays,
       };
     });
 }
@@ -464,8 +498,7 @@ function buildAllLeaderboardEmbeds(dustData, dirtData) {
       name = name.padEnd(15, ' ');
       const club = (m.clubName || '—').padEnd(4, ' ');
       const monthlyFans = formatIntWithCommas(m.monthlyGain).padStart(12, ' ');
-      const days = Math.max(1, m.activeDays - 1);
-      const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / days)).padStart(10, ' ');
+      const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / m.averageDays)).padStart(10, ' ');
       return `${rank}  ${name} ${club}  ${monthlyFans}  ${dailyAvg}`;
     });
 
@@ -554,14 +587,11 @@ function buildBananaEmbed(data) {
   const activeMembers = members
     .filter((m) => isMemberActive(m, cutoff))
     .map((m) => {
-      const nonZeroFans = normalizeDailyFans(m.daily_fans);
-      const firstFans = nonZeroFans[0] ?? 0;
-      const latestFans = nonZeroFans[nonZeroFans.length - 1] ?? firstFans;
-      const monthlyGain = latestFans - firstFans;
+      const fanStats = getMemberFanStats(m.daily_fans);
       return {
         ...m,
-        monthlyGain,
-        activeDays: nonZeroFans.length,
+        monthlyGain: fanStats.monthlyGain,
+        averageDays: fanStats.averageDays,
       };
     })
     .sort((a, b) => b.monthlyGain - a.monthlyGain);
@@ -584,8 +614,7 @@ function buildBananaEmbed(data) {
     if (name.length > nameW) name = name.slice(0, nameW);
     name = name.padEnd(nameW, ' ');
     const monthlyFans = formatIntWithCommas(m.monthlyGain).padStart(monthlyW, ' ');
-    const days = Math.max(1, m.activeDays - 1);
-    const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / days)).padStart(dailyW, ' ');
+    const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
     return name + '  ' + monthlyFans + '  ' + dailyAvg;
   });
 
