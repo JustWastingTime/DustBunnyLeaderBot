@@ -185,67 +185,90 @@ function normalizeName(raw) {
   return name;
 }
 
+const EMPTY_FAN_STATS = {
+  dailyFans: [],
+  monthlyGain: 0,
+  contributionFans: 0,
+  firstFans: 0,
+  latestFans: 0,
+  averageDays: 1,
+  activeDays: 0,
+};
+
+// Parse a member's `daily_fans` array into normalized stats.
+//
+// Semantics encoded here:
+//  - Trailing zeros after the last positive entry are future calendar days
+//    we have no data for and are dropped.
+//  - A *single* negative at index 0 is the well-known API quirk where the
+//    first slot stores the previous-month baseline for THIS circle. Its
+//    magnitude is the baseline total fans.
+//  - Any other negative entries represent fan totals recorded by the
+//    member's previous circle (they transferred in mid-month). The most
+//    recent such negative is their fan total at the moment they left their
+//    old circle, so its magnitude is the correct contribution baseline.
+//    Everything before it is dropped.
+//  - Zeros inside the active window mean "scrape missed this day" (common
+//    during a club transition; Dust Bunny is updated more frequently than
+//    Dirt Bunny, which often lags a day in JST). They are forward-filled
+//    with the previous known total so daily-gain math doesn't double-count
+//    or spike.
+//
+// Resulting `dailyFans` always begins with a baseline entry, so callers
+// can treat `length - 1` as the number of in-circle day intervals.
 function getMemberFanStats(rawFans) {
   const fans = Array.isArray(rawFans) ? rawFans.filter((n) => typeof n === 'number') : [];
   const lastPositiveIdx = fans.reduce((idx, n, i) => (n > 0 ? i : idx), -1);
-  if (lastPositiveIdx < 0) {
-    return {
-      dailyFans: [],
-      monthlyGain: 0,
-      contributionFans: 0,
-      firstFans: 0,
-      latestFans: 0,
-      averageDays: 1,
-      activeDays: 0,
-    };
-  }
+  if (lastPositiveIdx < 0) return { ...EMPTY_FAN_STATS };
 
-  // Ignore trailing zeros after the last positive day (future calendar days).
   const trimmed = fans.slice(0, lastPositiveIdx + 1);
 
-  // Known API quirk: first value can be negative baseline for active members.
-  const hasLeadingNegativeBaseline = trimmed[0] < 0 && trimmed.slice(1).every((n) => n >= 0);
-  let joinedMidMonth = false;
+  let lastNegativeIdx = -1;
+  let negativeCount = 0;
+  for (let i = 0; i < trimmed.length; i += 1) {
+    if (trimmed[i] < 0) {
+      lastNegativeIdx = i;
+      negativeCount += 1;
+    }
+  }
+
+  const isPreviousMonthBaselineOnly = negativeCount === 1 && lastNegativeIdx === 0;
+
   let dailyFans;
 
-  if (hasLeadingNegativeBaseline) {
-    dailyFans = [Math.abs(trimmed[0]), ...trimmed.slice(1)];
+  if (lastNegativeIdx < 0) {
+    dailyFans = trimmed.slice();
+  } else if (isPreviousMonthBaselineOnly) {
+    const baseline = Math.abs(trimmed[0]);
+    let prev = baseline;
+    const rest = trimmed.slice(1).map((n) => {
+      const v = n > 0 ? n : prev;
+      prev = v;
+      return v;
+    });
+    dailyFans = [baseline, ...rest];
   } else {
-    const firstNonNegativeIdx = trimmed.findIndex((n) => n >= 0);
-    if (firstNonNegativeIdx < 0) {
-      return {
-        dailyFans: [],
-        monthlyGain: 0,
-        contributionFans: 0,
-        firstFans: 0,
-        latestFans: 0,
-        averageDays: 1,
-        activeDays: 0,
-      };
-    }
-    joinedMidMonth = firstNonNegativeIdx > 0 && trimmed.slice(0, firstNonNegativeIdx).some((n) => n < 0);
-    dailyFans = trimmed.slice(firstNonNegativeIdx).map((n) => (n < 0 ? 0 : n));
+    const baseline = Math.abs(trimmed[lastNegativeIdx]);
+    let prev = baseline;
+    const postJoin = trimmed.slice(lastNegativeIdx + 1).map((n) => {
+      const v = n > 0 ? n : prev;
+      prev = v;
+      return v;
+    });
+    dailyFans = [baseline, ...postJoin];
   }
+
+  if (!dailyFans.length) return { ...EMPTY_FAN_STATS };
 
   const firstFans = dailyFans[0] ?? 0;
   const latestFans = dailyFans[dailyFans.length - 1] ?? firstFans;
   const monthlyGain = latestFans - firstFans;
-  let contributionFans = monthlyGain;
-  if (joinedMidMonth) {
-    const preJoin = trimmed.slice(0, trimmed.length - dailyFans.length);
-    const lastNegativeBeforeJoin = [...preJoin].reverse().find((n) => n < 0);
-    if (typeof lastNegativeBeforeJoin === 'number') {
-      contributionFans = Math.max(0, latestFans - Math.abs(lastNegativeBeforeJoin));
-    }
-  }
-  const averageDays = joinedMidMonth
-    ? Math.max(1, dailyFans.length)
-    : Math.max(1, dailyFans.length - 1);
+  const averageDays = Math.max(1, dailyFans.length - 1);
 
   return {
     dailyFans,
     monthlyGain,
-    contributionFans,
+    contributionFans: monthlyGain,
     firstFans,
     latestFans,
     averageDays,
