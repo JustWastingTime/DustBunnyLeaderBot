@@ -208,6 +208,10 @@ const EMPTY_FAN_STATS = {
 //    recent such negative is their fan total at the moment they left their
 //    old circle, so its magnitude is the correct contribution baseline.
 //    Everything before it is dropped.
+//  - A *leading* zero with no negatives anywhere means the trainer joined
+//    THIS circle at the monthly reset from a different circle, so uma.moe
+//    never recorded a previous-month baseline. The first positive entry
+//    after the leading zero(s) is the real baseline.
 //  - Zeros inside the active window mean "scrape missed this day" (common
 //    during a club transition; Dust Bunny is updated more frequently than
 //    Dirt Bunny, which often lags a day in JST). They are forward-filled
@@ -237,7 +241,14 @@ function getMemberFanStats(rawFans) {
   let dailyFans;
 
   if (lastNegativeIdx < 0) {
-    dailyFans = trimmed.slice();
+    const firstPositiveIdx = trimmed.findIndex((n) => n > 0);
+    const start = firstPositiveIdx > 0 ? firstPositiveIdx : 0;
+    let prev = trimmed[start];
+    dailyFans = trimmed.slice(start).map((n) => {
+      const v = n > 0 ? n : prev;
+      prev = v;
+      return v;
+    });
   } else if (isPreviousMonthBaselineOnly) {
     const baseline = Math.abs(trimmed[0]);
     let prev = baseline;
