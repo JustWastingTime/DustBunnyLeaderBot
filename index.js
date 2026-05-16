@@ -192,6 +192,7 @@ function getMemberFanStats(rawFans) {
     return {
       dailyFans: [],
       monthlyGain: 0,
+      contributionFans: 0,
       firstFans: 0,
       latestFans: 0,
       averageDays: 1,
@@ -215,6 +216,7 @@ function getMemberFanStats(rawFans) {
       return {
         dailyFans: [],
         monthlyGain: 0,
+        contributionFans: 0,
         firstFans: 0,
         latestFans: 0,
         averageDays: 1,
@@ -228,6 +230,14 @@ function getMemberFanStats(rawFans) {
   const firstFans = dailyFans[0] ?? 0;
   const latestFans = dailyFans[dailyFans.length - 1] ?? firstFans;
   const monthlyGain = latestFans - firstFans;
+  let contributionFans = monthlyGain;
+  if (joinedMidMonth) {
+    const preJoin = trimmed.slice(0, trimmed.length - dailyFans.length);
+    const lastNegativeBeforeJoin = [...preJoin].reverse().find((n) => n < 0);
+    if (typeof lastNegativeBeforeJoin === 'number') {
+      contributionFans = Math.max(0, latestFans - Math.abs(lastNegativeBeforeJoin));
+    }
+  }
   const averageDays = joinedMidMonth
     ? Math.max(1, dailyFans.length)
     : Math.max(1, dailyFans.length - 1);
@@ -235,6 +245,7 @@ function getMemberFanStats(rawFans) {
   return {
     dailyFans,
     monthlyGain,
+    contributionFans,
     firstFans,
     latestFans,
     averageDays,
@@ -400,10 +411,11 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
         ...m,
         currentFans: fanStats.latestFans,
         monthlyGain: fanStats.monthlyGain,
+        contributionFans: fanStats.contributionFans,
         averageDays: fanStats.averageDays,
       };
     })
-    .sort((a, b) => b.monthlyGain - a.monthlyGain);
+    .sort((a, b) => b.contributionFans - a.contributionFans);
 
   const dailyDelta =
     typeof circle.live_points === 'number' && typeof circle.yesterday_points === 'number'
@@ -420,7 +432,7 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
     let name = normalizeName(m.trainer_name || 'Unknown');
     if (name.length > 15) name = name.slice(0, 15);
     name = name.padEnd(15, ' ');
-    const totalFans = formatIntWithCommas(m.monthlyGain).padStart(11, ' ');
+    const totalFans = formatIntWithCommas(m.contributionFans).padStart(11, ' ');
     const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / m.averageDays)).padStart(10, ' ');
     return `${rank}  ${name} ${totalFans}  ${dailyAvg}`;
   });
@@ -469,6 +481,7 @@ function getActiveMembersWithMonthlyGain(data, clubName) {
         ...m,
         clubName,
         monthlyGain: fanStats.monthlyGain,
+        contributionFans: fanStats.contributionFans,
         averageDays: fanStats.averageDays,
       };
     });
@@ -478,7 +491,7 @@ function buildAllLeaderboardEmbeds(dustData, dirtData) {
   const combined = [
     ...getActiveMembersWithMonthlyGain(dustData, 'Dust'),
     ...getActiveMembersWithMonthlyGain(dirtData, 'Dirt'),
-  ].sort((a, b) => b.monthlyGain - a.monthlyGain);
+  ].sort((a, b) => b.contributionFans - a.contributionFans);
 
   const perPage = 30;
   const totalPages = Math.max(1, Math.ceil(combined.length / perPage));
@@ -497,7 +510,7 @@ function buildAllLeaderboardEmbeds(dustData, dirtData) {
       if (name.length > 15) name = name.slice(0, 15);
       name = name.padEnd(15, ' ');
       const club = (m.clubName || '—').padEnd(4, ' ');
-      const monthlyFans = formatIntWithCommas(m.monthlyGain).padStart(12, ' ');
+      const monthlyFans = formatIntWithCommas(m.contributionFans).padStart(12, ' ');
       const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / m.averageDays)).padStart(10, ' ');
       return `${rank}  ${name} ${club}  ${monthlyFans}  ${dailyAvg}`;
     });
@@ -591,10 +604,11 @@ function buildBananaEmbed(data) {
       return {
         ...m,
         monthlyGain: fanStats.monthlyGain,
+        contributionFans: fanStats.contributionFans,
         averageDays: fanStats.averageDays,
       };
     })
-    .sort((a, b) => b.monthlyGain - a.monthlyGain);
+    .sort((a, b) => b.contributionFans - a.contributionFans);
 
   const bananaIdx = activeMembers.findIndex(
     (m) => (m.trainer_name || '').toLowerCase() === 'banana',
@@ -613,7 +627,7 @@ function buildBananaEmbed(data) {
     let name = normalizeName(m.trainer_name || 'Unknown');
     if (name.length > nameW) name = name.slice(0, nameW);
     name = name.padEnd(nameW, ' ');
-    const monthlyFans = formatIntWithCommas(m.monthlyGain).padStart(monthlyW, ' ');
+    const monthlyFans = formatIntWithCommas(m.contributionFans).padStart(monthlyW, ' ');
     const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
     return name + '  ' + monthlyFans + '  ' + dailyAvg;
   });
