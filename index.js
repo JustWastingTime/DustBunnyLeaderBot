@@ -175,6 +175,25 @@ function formatCompactInt(n) {
   return formatNumber(Math.trunc(n));
 }
 
+function formatCompactTight(n) {
+  const value = Math.trunc(n);
+  if (value >= 1e9) {
+    const b = value / 1e9;
+    return `${b >= 100 ? Math.round(b) : b.toFixed(1)}B`;
+  }
+  if (value >= 1e6) {
+    const m = value / 1e6;
+    if (m >= 100) return `${Math.round(m)}M`;
+    return `${m.toFixed(1)}M`;
+  }
+  if (value >= 1e3) {
+    const k = value / 1e3;
+    if (k >= 100) return `${Math.round(k)}K`;
+    return `${k.toFixed(1)}K`;
+  }
+  return String(value);
+}
+
 function normalizeName(raw) {
   let name = raw || 'Unknown';
   // Replace some problematic punctuation and spaces
@@ -467,18 +486,19 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
       : null;
 
   // Build compact table rows (without zone colors)
-  const nameW = 13;
-  const totalW = 6;
-  const dailyW = 6;
+  const nameW = 11;
+  const rankW = 3;
+  const totalW = 5;
+  const dailyW = 5;
   const header =
-    'Rank Name          Total  Daily\n' +
-    '------------------------------';
+    'Rk Name        Tot  Day\n' +
+    '-----------------------';
 
   const rows = activeMembers.map((m, idx) => {
-    const rank = `#${idx + 1}`.padEnd(4, ' ');
+    const rank = `#${idx + 1}`.padEnd(rankW, ' ');
     const name = truncateAndPadName(m.trainer_name, nameW);
-    const totalFans = formatCompactInt(m.contributionFans).padStart(totalW, ' ');
-    const dailyAvg = formatCompactInt(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
+    const totalFans = formatCompactTight(m.contributionFans).padStart(totalW, ' ');
+    const dailyAvg = formatCompactTight(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
     return `${rank} ${name} ${totalFans} ${dailyAvg}`;
   });
 
@@ -546,19 +566,20 @@ function buildAllLeaderboardEmbeds(dustData, dirtData) {
     const start = pageIdx * perPage;
     const pageMembers = combined.slice(start, start + perPage);
 
-    const nameW = 13;
+    const nameW = 9;
+    const rankW = 3;
     const clubW = 4;
-    const monthlyW = 7;
-    const dailyW = 6;
+    const monthlyW = 5;
+    const dailyW = 5;
     const header =
-      'Rank Name          Club Monthly  Daily\n' +
-      '-------------------------------------';
+      'Rk Name      Club Month Day\n' +
+      '----------------------------';
     const rows = pageMembers.map((m, idx) => {
-      const rank = `#${start + idx + 1}`.padEnd(4, ' ');
+      const rank = `#${start + idx + 1}`.padEnd(rankW, ' ');
       const name = truncateAndPadName(m.trainer_name, nameW);
       const club = (m.clubName || '—').slice(0, clubW).padEnd(clubW, ' ');
-      const monthlyFans = formatCompactInt(m.contributionFans).padStart(monthlyW, ' ');
-      const dailyAvg = formatCompactInt(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
+      const monthlyFans = formatCompactTight(m.contributionFans).padStart(monthlyW, ' ');
+      const dailyAvg = formatCompactTight(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
       return `${rank} ${name} ${club} ${monthlyFans} ${dailyAvg}`;
     });
 
