@@ -469,16 +469,16 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
   // Build compact table rows (without zone colors)
   const nameW = 12;
   const totalW = 6;
-  const dailyW = 6;
+  const dailyW = 9;
   const header =
-    'Rank Name         Total  Daily\n' +
-    '------------------------------';
+    'Rank Name         Total      Daily\n' +
+    '---------------------------------';
 
   const rows = activeMembers.map((m, idx) => {
     const rank = `#${idx + 1}`.padEnd(4, ' ');
     const name = truncateAndPadName(m.trainer_name, nameW);
     const totalFans = formatCompactInt(m.contributionFans).padStart(totalW, ' ');
-    const dailyAvg = formatCompactInt(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
+    const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
     return `${rank} ${name} ${totalFans} ${dailyAvg}`;
   });
 
@@ -549,16 +549,16 @@ function buildAllLeaderboardEmbeds(dustData, dirtData) {
     const nameW = 12;
     const clubW = 4;
     const monthlyW = 7;
-    const dailyW = 6;
+    const dailyW = 9;
     const header =
-      'Rank Name         Club Monthly Daily\n' +
-      '------------------------------------';
+      'Rank Name         Club Monthly     Daily\n' +
+      '---------------------------------------';
     const rows = pageMembers.map((m, idx) => {
       const rank = `#${start + idx + 1}`.padEnd(4, ' ');
       const name = truncateAndPadName(m.trainer_name, nameW);
       const club = (m.clubName || '—').slice(0, clubW).padEnd(clubW, ' ');
       const monthlyFans = formatCompactInt(m.contributionFans).padStart(monthlyW, ' ');
-      const dailyAvg = formatCompactInt(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
+      const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
       return `${rank} ${name} ${club} ${monthlyFans} ${dailyAvg}`;
     });
 
