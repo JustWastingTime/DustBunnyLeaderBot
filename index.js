@@ -195,12 +195,6 @@ function truncateAndPadName(rawName, width) {
   return name.padEnd(width, ' ');
 }
 
-function truncateName(rawName, width) {
-  let name = normalizeName(rawName || 'Unknown');
-  if (name.length > width) name = name.slice(0, width);
-  return name;
-}
-
 const EMPTY_FAN_STATS = {
   dailyFans: [],
   monthlyGain: 0,
@@ -473,16 +467,18 @@ function buildLeaderboardEmbed(data, currentTarget = null) {
       : null;
 
   // Build compact table rows (without zone colors)
-  const nameW = 14;
+  const nameW = 13;
+  const totalW = 6;
+  const dailyW = 6;
   const header =
-    'Rank Name           Total Daily\n' +
-    '-------------------------------';
+    'Rank Name          Total  Daily\n' +
+    '------------------------------';
 
   const rows = activeMembers.map((m, idx) => {
-    const rank = `#${idx + 1}`;
-    const name = truncateName(m.trainer_name, nameW);
-    const totalFans = formatCompactInt(m.contributionFans);
-    const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / m.averageDays));
+    const rank = `#${idx + 1}`.padEnd(4, ' ');
+    const name = truncateAndPadName(m.trainer_name, nameW);
+    const totalFans = formatCompactInt(m.contributionFans).padStart(totalW, ' ');
+    const dailyAvg = formatCompactInt(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
     return `${rank} ${name} ${totalFans} ${dailyAvg}`;
   });
 
@@ -550,17 +546,19 @@ function buildAllLeaderboardEmbeds(dustData, dirtData) {
     const start = pageIdx * perPage;
     const pageMembers = combined.slice(start, start + perPage);
 
-    const nameW = 14;
+    const nameW = 13;
     const clubW = 4;
+    const monthlyW = 7;
+    const dailyW = 6;
     const header =
-      'Rank Name           Club Monthly Daily\n' +
+      'Rank Name          Club Monthly  Daily\n' +
       '-------------------------------------';
     const rows = pageMembers.map((m, idx) => {
-      const rank = `#${start + idx + 1}`;
-      const name = truncateName(m.trainer_name, nameW);
-      const club = (m.clubName || '—').slice(0, clubW);
-      const monthlyFans = formatCompactInt(m.contributionFans);
-      const dailyAvg = formatIntWithCommas(Math.round(m.monthlyGain / m.averageDays));
+      const rank = `#${start + idx + 1}`.padEnd(4, ' ');
+      const name = truncateAndPadName(m.trainer_name, nameW);
+      const club = (m.clubName || '—').slice(0, clubW).padEnd(clubW, ' ');
+      const monthlyFans = formatCompactInt(m.contributionFans).padStart(monthlyW, ' ');
+      const dailyAvg = formatCompactInt(Math.round(m.monthlyGain / m.averageDays)).padStart(dailyW, ' ');
       return `${rank} ${name} ${club} ${monthlyFans} ${dailyAvg}`;
     });
 
