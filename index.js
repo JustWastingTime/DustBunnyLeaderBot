@@ -191,6 +191,11 @@ function normalizeName(raw) {
 
 function truncateAndPadName(rawName, width) {
   let name = normalizeName(rawName || 'Unknown');
+  const atIdx = name.indexOf('@');
+  if (atIdx > 0) {
+    const stripped = name.slice(0, atIdx).trimEnd();
+    if (stripped) name = stripped;
+  }
   if (name.length > width) name = name.slice(0, width);
   return name.padEnd(width, ' ');
 }
