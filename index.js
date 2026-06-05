@@ -189,13 +189,16 @@ function normalizeName(raw) {
   return name;
 }
 
+function stripDisplaySuffix(name) {
+  // Some trainer names include club tags like "Name@BUNS" (or fullwidth ＠).
+  // Strip suffixes for leaderboard table display to keep rows within embed width.
+  const stripped = String(name || '').replace(/\s*[@＠].*$/u, '').trimEnd();
+  return stripped || String(name || '');
+}
+
 function truncateAndPadName(rawName, width) {
   let name = normalizeName(rawName || 'Unknown');
-  const atIdx = name.indexOf('@');
-  if (atIdx > 0) {
-    const stripped = name.slice(0, atIdx).trimEnd();
-    if (stripped) name = stripped;
-  }
+  name = stripDisplaySuffix(name);
   if (name.length > width) name = name.slice(0, width);
   return name.padEnd(width, ' ');
 }
@@ -678,7 +681,7 @@ function buildBananaEmbed(data) {
     '-'.repeat(nameW + monthlyW + dailyW + 4);
 
   const rows = belowBanana.map((m) => {
-    let name = normalizeName(m.trainer_name || 'Unknown');
+    let name = stripDisplaySuffix(normalizeName(m.trainer_name || 'Unknown'));
     if (name.length > nameW) name = name.slice(0, nameW);
     name = name.padEnd(nameW, ' ');
     const monthlyFans = formatIntWithCommas(m.contributionFans).padStart(monthlyW, ' ');
