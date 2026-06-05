@@ -178,7 +178,7 @@ function formatCompactInt(n) {
 function normalizeName(raw) {
   let name = raw || 'Unknown';
   // Replace some problematic punctuation and spaces
-  name = name.replace(/！/g, '!').replace(/\s+/g, ' ');
+  name = name.replace(/！/g, '!').replace(/＠/g, '@').replace(/\s+/g, ' ');
   // Map specific wide-character names to ASCII equivalents for alignment
   if (name.includes('くま')) {
     name = 'Kuma Kaibutsu';
@@ -190,10 +190,8 @@ function normalizeName(raw) {
 }
 
 function stripDisplaySuffix(name) {
-  // Some trainer names include club tags like "Name@BUNS" (or fullwidth ＠).
-  // Strip suffixes for leaderboard table display to keep rows within embed width.
-  const stripped = String(name || '').replace(/\s*[@＠].*$/u, '').trimEnd();
-  return stripped || String(name || '');
+  // Keep suffixes (e.g. Name@BUNS), but normalize fullwidth at-sign.
+  return String(name || '').replace(/＠/g, '@').trimEnd();
 }
 
 function truncateAndPadName(rawName, width) {
